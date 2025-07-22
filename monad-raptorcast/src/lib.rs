@@ -694,7 +694,8 @@ where
                 match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
                     Ok(inbound) => match inbound {
                         InboundRouterMessage::AppMessage(app_message) => {
-                            tracing::trace!("RaptorCastPrimary rx deserialized AppMessage");
+                            let associated_round = app_message.associated_round();
+                            tracing::trace!(?associated_round, "RaptorCastPrimary rx deserialized AppMessage");
                             this.pending_events
                                 .push_back(RaptorCastEvent::Message(app_message.event(from)));
                         }
