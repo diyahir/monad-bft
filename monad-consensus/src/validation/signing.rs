@@ -141,21 +141,11 @@ where
 
     pub fn get_associated_round(&self) -> Option<Round> {
         match &self.obj.obj.message {
-            ProtocolMessage::Proposal(prop) => {
-                Some(prop.proposal_round)
-            },
-            ProtocolMessage::Vote(vote) => {
-                Some(vote.vote.round)
-            },
-            ProtocolMessage::Timeout(tmo) => {
-                Some(tmo.tminfo.round)
-            },
-            ProtocolMessage::RoundRecovery(rec) => {
-                Some(rec.round)
-            },
-            ProtocolMessage::NoEndorsement(nod) => {
-                Some(nod.msg.round)
-            },
+            ProtocolMessage::Proposal(prop) => Some(prop.proposal_round),
+            ProtocolMessage::Vote(vote) => Some(vote.vote.round),
+            ProtocolMessage::Timeout(tmo) => Some(tmo.tminfo.round),
+            ProtocolMessage::RoundRecovery(rec) => Some(rec.round),
+            ProtocolMessage::NoEndorsement(nod) => Some(nod.msg.round),
         }
     }
 }

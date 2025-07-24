@@ -474,6 +474,36 @@ where
         }
     }
 
+    // Once we receive a message, we want to verify that the round referenced in
+    // the message matches the current group.
+    pub fn check_round(
+        &self,
+        msg_round: Option<Round>,
+        author_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> bool {
+        if !self.is_dynamic_fullnode {
+            return true;
+        }
+        if let Some(group) = self.fullnode_map.get(author_node_id) {
+            if let Some(round) = msg_round {
+                if !group.round_span.contains(round) {
+                    tracing::debug!(
+                        ?group, ?round, ?author_node_id,
+                        "Current group for author does not contain the round referenced in the message");
+                    return false;
+                }
+            }
+            return true;
+        } else {
+            tracing::debug!(
+                ?author_node_id,
+                ?msg_round,
+                "There is no raptorcast group keyed on message author's node id"
+            );
+        }
+        false
+    }
+
     // Intended to be used by UdpState::handle_message()
     // When receiving a raptorcast chunk, this method will help determine which
     // peers (validators or full-nodes) to re-broadcast chunks to, given the

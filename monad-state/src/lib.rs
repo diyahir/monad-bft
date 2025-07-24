@@ -714,10 +714,8 @@ where
 
     fn associated_round(&self) -> Option<Round> {
         match self {
-            MonadMessage::Consensus(msg) => {
-                msg.get_associated_round()
-            },
-            _ => None
+            MonadMessage::Consensus(msg) => msg.get_associated_round(),
+            _ => None,
         }
     }
 }
