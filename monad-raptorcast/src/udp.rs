@@ -734,7 +734,7 @@ where
         BuildTarget::Raptorcast((epoch_validators, full_nodes_view)) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
-            tracing::trace!(
+            tracing::debug!(
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
@@ -818,7 +818,7 @@ where
         BuildTarget::FullNodeRaptorCast(group) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
-            tracing::trace!(
+            tracing::debug!(
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
@@ -955,6 +955,7 @@ where
 
                 data
             };
+
             let signature = ST::sign::<signing_domain::RaptorcastChunk>(
                 &header_with_root[SIGNATURE_SIZE..],
                 key,
