@@ -170,19 +170,19 @@ where
 
     // Populate self.curr_group and clean up expired groups.
     // When we have a real timer, this can be called from UpdateCurrentRound
-    fn enter_round(&mut self, new_round: Round) {
-        trace!(?new_round, "enter_round");
-        assert_ne!(new_round, Round::MAX);
+    fn enter_round(&mut self, round: Round) {
+        trace!(?round, "enter_round");
+        assert_ne!(round, Round::MAX);
 
-        if new_round < self.curr_group.get_round_span().end {
+        if round < self.curr_group.get_round_span().end {
             // We don't need to advance to the next group yet
-            assert!(new_round >= self.curr_group.get_round_span().start);
+            assert!(round >= self.curr_group.get_round_span().start);
             return;
         }
 
         // Remove all groups that have ended.
         self.group_schedule
-            .retain(|_, group| group.end_round >= new_round);
+            .retain(|_, group| group.end_round >= round);
 
         let Some(next_group) = self.group_schedule.first_entry() else {
             // We didn't manage to form a group in time for the new round.
@@ -190,13 +190,13 @@ where
             // We currently have an empty group for some rounds while we
             // allow invites for a future group to complete.
             tracing::debug!(
-                ?new_round,
+                ?round,
                 "No group scheduled for RaptorCastSecondary \
                     round nor any other future round yet.",
             );
             // Not serving any full nodes in current round
             self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
-            self.curr_group = self.new_empty_group(new_round);
+            self.curr_group = self.new_empty_group(round);
             return;
         };
 
@@ -204,28 +204,21 @@ where
         // middle of `next_group`. In this case, the dynamic full-nodes will
         // also experience round gaps unless they are being broadcast the
         // missing rounds from other validators.
-        let group_start_round = *next_group.key();
-        if group_start_round < new_round {
-            tracing::debug!(
-                ?new_round,
-                ?group_start_round,
-                "RaptorCastSecondary jumping into middle of future scheduled group after a gap. \
-                Downstream full-nodes might see round gaps as well."
-            );
-        }
-
-        if group_start_round > new_round {
+        let start_round = *next_group.key();
+        assert!(start_round >= round);
+        assert!(start_round == next_group.get().start_round);
+        if start_round > round {
             // The next group is not yet scheduled to start. This can happen
             // when there are gaps in the round sequence.
             tracing::debug!(
-                ?new_round,
+                ?round,
                 ?next_group,
                 "No group scheduled for RaptorCastSecondary \
                     round, next group is",
             );
             // Not serving any full nodes in current round
             self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
-            self.curr_group = self.new_empty_group(new_round);
+            self.curr_group = self.new_empty_group(round);
             return;
         }
 
@@ -1945,6 +1938,7 @@ mod tests {
         assert_eq!(clt.num_pending_confirms(), 0);
     }
 
+
     // cargo test -p monad-raptorcast raptorcast_secondary::tests::gap_into_middle_of_scheduled_group -- --nocapture
     // The validator was seen crashing after seeing a round gap which causes it
     // to enter the middle of a scheduled group. e.g.
@@ -2145,4 +2139,5 @@ mod tests {
             );
         }
     }
+
 }
