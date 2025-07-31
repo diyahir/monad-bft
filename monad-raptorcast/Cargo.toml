@@ -30,11 +30,12 @@ hex = { workspace = true }
 iset = { workspace = true }
 itertools = { workspace = true }
 lru = { workspace = true }
+quick_cache = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
