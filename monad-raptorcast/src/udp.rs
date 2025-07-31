@@ -734,7 +734,7 @@ where
         BuildTarget::Raptorcast((epoch_validators, full_nodes_view)) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
-            tracing::debug!(
+            tracing::trace!(
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
@@ -818,7 +818,7 @@ where
         BuildTarget::FullNodeRaptorCast(group) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
-            tracing::debug!(
+            tracing::trace!(
                 ?self_id,
                 unix_ts_ms,
                 app_message_len,
@@ -834,7 +834,7 @@ where
             let mut chunk_idx = 0_u16;
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
+            for node_id in group.iter_skip_self_and_sender(&self_id, rand::random::<usize>()) {
                 let start_idx: usize = num_packets * pp / total_peers;
                 pp += 1;
                 let end_idx: usize = num_packets * pp / total_peers;
