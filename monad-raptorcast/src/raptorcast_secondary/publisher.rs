@@ -213,7 +213,6 @@ where
                 Downstream full-nodes might see round gaps as well."
             );
         }
-        assert!(group_start_round == next_group.get().start_round);
 
         if group_start_round > new_round {
             // The next group is not yet scheduled to start. This can happen
