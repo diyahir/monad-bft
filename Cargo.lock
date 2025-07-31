@@ -5059,6 +5059,7 @@ dependencies = [
  "monad-state-backend",
  "monad-types",
  "monad-updaters",
+ "tracing",
 ]
 
 [[package]]

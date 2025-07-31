@@ -145,6 +145,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    #[tracing::instrument(
+        level = "debug", 
+        name = "consesnsus_sign"
+        skip_all,
+    )]
     pub fn sign(
         self,
         keypair: &ST::KeyPairType,
