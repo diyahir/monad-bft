@@ -318,7 +318,13 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         client_version: u32,
-    ) -> Result<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>, Error>
+    ) -> Result<
+        (
+            ProtocolMessage<ST, SCT, EPT>,
+            Option<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>>,
+        ),
+        Error,
+    >
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -344,38 +350,43 @@ where
             return Err(Error::InvalidVersion);
         }
 
-        match &message {
+        let (shaped_message, was_reshaped) = match &message {
             ProtocolMessage::Proposal(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
-            }
-            ProtocolMessage::Vote(m) => {
-                m.validate(epoch_manager)?;
-            }
-            ProtocolMessage::Timeout(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
-            }
+                let maybe_reshaped = m.validate(epoch_manager, val_epoch_map, election)?;
+                if let Some(reshaped) = maybe_reshaped {
+                    (ProtocolMessage::Proposal(reshaped), true)
+                } else {
+                    (ProtocolMessage::Proposal(m.clone()), false)
+                }
+            },
+            ProtocolMessage::Vote(m) => m.validate(epoch_manager)?,
+            ProtocolMessage::Timeout(m) => m.validate(epoch_manager, val_epoch_map, election)?,
             ProtocolMessage::RoundRecovery(m) => {
-                m.validate(epoch_manager, val_epoch_map, election)?;
+                m.validate(epoch_manager, val_epoch_map, election)?
             }
-            ProtocolMessage::NoEndorsement(m) => {
-                m.validate(epoch_manager)?;
-            }
-        }
+            ProtocolMessage::NoEndorsement(m) => m.validate(epoch_manager)?,
+        };
 
-        Ok(Verified {
-            author,
-            message: Unverified {
-                obj: Validated {
-                    message: Unvalidated {
-                        obj: ConsensusMessage {
-                            version: msg_version,
-                            message,
+        let maybe_verified_message = if was_reshaped {
+            None
+        } else {
+            Verified {
+                author,
+                message: Unverified {
+                    obj: Validated {
+                        message: Unvalidated {
+                            obj: ConsensusMessage {
+                                version: msg_version,
+                                message,
+                            },
                         },
                     },
+                    author_signature,
                 },
-                author_signature,
-            },
-        })
+            }
+        };
+
+        Ok((shaped_message, maybe_verified_message))
     }
 }
 
