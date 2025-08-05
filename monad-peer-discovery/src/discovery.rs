@@ -1125,9 +1125,11 @@ where
     fn get_known_addrs_fullnodes(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        let empty = BTreeSet::new();
+        let curr_validators = self.epoch_validators.get(&self.current_epoch).unwrap_or(&empty);
         self.routing_info
             .iter()
-            .filter(|(id, _)| !self.is_validator(id))
+            .filter(|(id, _)| !curr_validators.contains(&id) )
             .map(|(id, name_record)| (*id, name_record.address()))
             .collect()
     }
