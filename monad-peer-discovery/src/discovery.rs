@@ -1122,6 +1122,16 @@ where
             .collect()
     }
 
+    fn get_known_addrs_fullnodes(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        self.routing_info
+            .iter()
+            .filter(|(id, _)| !self.is_validator(id))
+            .map(|(id, name_record)| (*id, name_record.address()))
+            .collect()
+    }
+
     fn get_name_records(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
