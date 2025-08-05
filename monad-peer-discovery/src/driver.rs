@@ -260,6 +260,16 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             .collect()
     }
 
+    pub fn get_known_addresses_fullnodes(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
+        self.pd
+            .get_known_addrs_fullnodes()
+            .into_iter()
+            .map(|(k, v)| (k, SocketAddr::V4(v)))
+            .collect()
+    }
+
     pub fn get_name_records(
         &self,
     ) -> HashMap<

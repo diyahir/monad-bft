@@ -338,7 +338,7 @@ where
                                 self.peer_discovery_driver
                                     .lock()
                                     .unwrap()
-                                    .get_known_addresses()
+                                    .get_known_addresses_fullnodes()
                             };
                             let nodes: Vec<_> = known_addresses.keys().copied().collect();
                             trace!(
@@ -355,7 +355,7 @@ where
                                 self.peer_discovery_driver
                                     .lock()
                                     .unwrap()
-                                    .get_known_addresses()
+                                    .get_known_addresses_fullnodes()
                             };
 
                             // if group_msg is a ConfirmGroup message, update peer discovery with the group information

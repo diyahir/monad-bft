@@ -220,6 +220,12 @@ where
         self.known_addresses.clone()
     }
 
+    fn get_known_addrs_fullnodes(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        self.known_addresses.clone()
+    }
+
     fn get_name_records(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
