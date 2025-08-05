@@ -78,6 +78,6 @@ pub struct Cli {
     )]
     pub pprof: String,
 
-    #[arg(long)]
+    #[arg(long, default_value = "/tmp/node_manytrace.sock")]
     pub manytrace_socket: Option<String>,
 }
