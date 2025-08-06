@@ -65,7 +65,7 @@ pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 
-pub type UdpPriority = monad_dataplane::UdpPriority;
+pub type UdpPriority = monad_executor_glue::UdpPriority;
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -422,7 +422,9 @@ where
     };
     let up_bandwidth_mbps = 1_000;
     let dp_builder = DataplaneBuilder::new(&local_addr, up_bandwidth_mbps);
-    let (dp_reader, dp_writer) = dp_builder.build().split();
+    let dp = dp_builder.build();
+    assert!(dp.block_until_ready(Duration::from_secs(2)));
+    let (dp_reader, dp_writer) = dp.split();
     let config = config::RaptorCastConfig {
         shared_key,
         mtu: DEFAULT_MTU,
@@ -642,19 +644,25 @@ where
                             })
                             .collect();
 
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
+                        this.dataplane_writer.udp_write_broadcast_with_priority(
+                            BroadcastMsg {
+                                targets: target_addrs,
+                                payload,
+                                stride: bcast_stride,
+                            },
+                            UdpPriority::High,
+                        );
                     },
                     |payload, bcast_stride| {
                         // Callback for forwarding chunks to full nodes
-                        this.dataplane_writer.udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: bcast_stride,
-                        });
+                        this.dataplane_writer.udp_write_broadcast_with_priority(
+                            BroadcastMsg {
+                                targets: full_node_addrs.clone(),
+                                payload,
+                                stride: bcast_stride,
+                            },
+                            UdpPriority::Regular,
+                        );
                     },
                     message,
                 )
