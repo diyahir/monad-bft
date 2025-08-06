@@ -105,6 +105,23 @@ pub fn spawn_tasks(
         }
     }
 
+    {
+        const SO_PRIORITY_VALUE: libc::c_int = 6;
+
+        if unsafe {
+            libc::setsockopt(
+                raw_fd,
+                libc::SOL_SOCKET,
+                libc::SO_PRIORITY,
+                &SO_PRIORITY_VALUE as *const _ as _,
+                std::mem::size_of_val(&SO_PRIORITY_VALUE) as _,
+            )
+        } != 0
+        {
+            panic!("set SO_PRIORITY failed with: {}", Error::last_os_error());
+        }
+    }
+
     spawn(rx(udp_socket_rx, udp_ingress_tx));
     spawn(tx(udp_socket_tx, udp_egress_rx, up_bandwidth_mbps));
 }
