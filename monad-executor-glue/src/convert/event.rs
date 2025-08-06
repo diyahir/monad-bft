@@ -13,15 +13,19 @@ use monad_crypto::certificate_signature::{
 };
 use monad_proto::{
     error::ProtoError,
-    proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
+    proto::{
+        blocksync::ProtoBlockSyncSelfRequest,
+        blocktimestamp::{ProtoPingTick, ProtoTimestampEnterEpoch},
+        event::*,
+    },
 };
 use monad_types::ExecutionProtocol;
 
 use crate::{
-    BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, SessionId, StateSyncBadVersion,
-    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
+    BlockSyncEvent, BlockTimestampEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent,
+    GetFullNodes, GetPeers, KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, SessionId,
+    StateSyncBadVersion, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
+    StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -50,14 +54,17 @@ where
             }
             MonadEvent::TimestampUpdateEvent(event) => {
                 proto_monad_event::Event::TimestampUpdateEvent(ProtoTimestampUpdate {
-                    update: (*event) as u64, // TODO: this is wrong but protobuf is not used in
-                                             // protocol and will be deleted
+                    update: { *event }, // TODO: this is wrong but protobuf is not used in
+                                        // protocol and will be deleted
                 })
             }
             MonadEvent::StateSyncEvent(event) => {
                 proto_monad_event::Event::StateSyncEvent(event.into())
             }
             MonadEvent::ConfigEvent(event) => proto_monad_event::Event::ConfigEvent(event.into()),
+            MonadEvent::BlockTimestampEvent(event) => {
+                proto_monad_event::Event::BlockTimestampEvent(event.into())
+            }
         };
         Self { event: Some(event) }
     }
@@ -91,13 +98,16 @@ where
                 MonadEvent::ControlPanelEvent(e.try_into()?)
             }
             Some(proto_monad_event::Event::TimestampUpdateEvent(event)) => {
-                MonadEvent::TimestampUpdateEvent(event.update as u128)
+                MonadEvent::TimestampUpdateEvent(event.update)
             }
             Some(proto_monad_event::Event::StateSyncEvent(event)) => {
                 MonadEvent::StateSyncEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::ConfigEvent(event)) => {
                 MonadEvent::ConfigEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::BlockTimestampEvent(event)) => {
+                MonadEvent::BlockTimestampEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -291,6 +301,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => proto_mempool_event::Event::Proposal(ProtoProposal {
                 epoch: Some(epoch.into()),
                 round: Some(round.into()),
@@ -308,6 +319,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> From<&MempoolEvent<SCT, E
                     .collect(),
                 proposed_execution_inputs: Some(proposed_execution_inputs.into()),
                 last_round_tc: last_round_tc.as_ref().map(Into::into),
+                elapsed_ns: *elapsed_ns as u64,
             }),
             MempoolEvent::ForwardedTxs { sender, txs } => {
                 proto_mempool_event::Event::ForwardedTxs(ProtoForwardedTxs {
@@ -344,6 +356,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             })) => MempoolEvent::Proposal {
                 epoch: epoch
                     .ok_or(ProtoError::MissingRequiredField(
@@ -388,6 +401,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> TryFrom<ProtoMempoolEvent
                     ))?
                     .try_into()?,
                 last_round_tc: last_round_tc.map(TryInto::try_into).transpose()?,
+                elapsed_ns: elapsed_ns as u128,
             },
             Some(proto_mempool_event::Event::ForwardedTxs(forwarded)) => {
                 MempoolEvent::ForwardedTxs {
@@ -1077,6 +1091,94 @@ impl<SCT: SignatureCollection> TryFrom<ProtoConfigEvent> for ConfigEvent<SCT> {
                 }
                 ConfigEvent::KnownPeersUpdate(KnownPeersUpdate { known_peers })
             }
+        };
+        Ok(event)
+    }
+}
+
+impl<SCT> From<&BlockTimestampEvent<SCT>> for ProtoBlockTimestampEvent
+where
+    SCT: SignatureCollection,
+{
+    fn from(value: &BlockTimestampEvent<SCT>) -> Self {
+        let event = match value {
+            BlockTimestampEvent::PingRequest { sender, message } => {
+                proto_block_timestamp_event::Event::PingRequest(ProtoPingRequestWithSender {
+                    sender: Some(sender.into()),
+                    request: Some(message.into()),
+                })
+            }
+            BlockTimestampEvent::PingResponse { sender, message } => {
+                proto_block_timestamp_event::Event::PingResponse(ProtoPingResponseWithSender {
+                    sender: Some(sender.into()),
+                    response: Some(message.into()),
+                })
+            }
+            BlockTimestampEvent::PingTick => {
+                proto_block_timestamp_event::Event::PingTick(ProtoPingTick {})
+            }
+            BlockTimestampEvent::TimestampEnterEpoch { epoch } => {
+                proto_block_timestamp_event::Event::TimestampEnterEpoch(ProtoTimestampEnterEpoch {
+                    epoch: Some(epoch.into()),
+                })
+            }
+        };
+        Self { event: Some(event) }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockTimestampEvent> for BlockTimestampEvent<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockTimestampEvent) -> Result<Self, Self::Error> {
+        let event = match value.event {
+            Some(event) => match event {
+                proto_block_timestamp_event::Event::PingRequest(event) => {
+                    let sender = event
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "PingRequest.sender".to_owned(),
+                        ))?
+                        .try_into()?;
+                    let message = event
+                        .request
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "PingRequest.request".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockTimestampEvent::PingRequest { sender, message }
+                }
+                proto_block_timestamp_event::Event::PingResponse(event) => {
+                    let sender = event
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "PingResponse.sender".to_owned(),
+                        ))?
+                        .try_into()?;
+                    let message = event
+                        .response
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "PingResponse.message".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockTimestampEvent::PingResponse { sender, message }
+                }
+                proto_block_timestamp_event::Event::PingTick(_event) => {
+                    BlockTimestampEvent::PingTick {}
+                }
+                proto_block_timestamp_event::Event::TimestampEnterEpoch(event) => {
+                    let epoch = event
+                        .epoch
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockTimestampEvent.TimestampEnterEpoch.epoch".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockTimestampEvent::TimestampEnterEpoch { epoch }
+                }
+            },
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockTimestampEvent.event".to_owned(),
+            ))?,
         };
         Ok(event)
     }

@@ -1,5 +1,6 @@
-use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
+use std::{cmp::max, collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
 
+use monad_blocktimestamp::timestamp::BlockTimestamp;
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams,
@@ -22,6 +23,7 @@ use monad_consensus_types::{
     },
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, LockedEpoch, RootInfo},
+    clock::Clock,
     metrics::Metrics,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, Rank},
@@ -44,10 +46,9 @@ use monad_validator::{
 };
 use tracing::{debug, info, trace, warn};
 
-use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
+use crate::command::ConsensusCommand;
 
 pub mod command;
-pub mod timestamp;
 
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
@@ -131,7 +132,7 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -143,6 +144,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
@@ -160,7 +162,7 @@ where
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
-    pub block_timestamp: &'a BlockTimestamp,
+    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey, CL>,
 
     /// Destination address for proposal payments
     pub beneficiary: &'a [u8; 20],
@@ -310,8 +312,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -323,6 +325,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
@@ -559,23 +562,38 @@ where
                 return cmds;
             }
         };
-        let block_round = block.get_round();
-
-        // TODO: ts adjustments are disabled anyways. this needs to be moved to
-        // where timestamp validation is done, in block_policy right now.
-        // block_policy doesn't have visibility on whether current round is
-        // bumped. Deferring the move
-        /*
-        if let Some(ts_delta) = self
-            .block_timestamp
-            .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
+        if let Some(parent_timestamp) = self
+            .consensus
+            .blocktree()
+            .get_timestamp_of_qc(block.get_qc())
         {
-            // only update timestamp if the block advanced us our round
-            if block_round > original_round {
-                cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+            if self
+                .block_timestamp
+                .validate_block_timestamp(
+                    parent_timestamp,
+                    block.get_timestamp(),
+                    self.config
+                        .chain_config
+                        .get_chain_revision(round)
+                        .chain_params()
+                        .vote_pace
+                        .as_nanos(),
+                )
+                .is_err()
+            {
+                warn!("Error");
             }
         }
-        */
+        let block_round = block.get_round();
+        if block.get_round() > original_round
+            && block.get_round() == block.get_qc().get_round() + Round(1)
+        {
+            self.block_timestamp.proposal_received(
+                block.get_round(),
+                block.get_timestamp(),
+                &author,
+            );
+        }
 
         // at this point, block is valid and can be added to the blocktree
         let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
@@ -624,6 +642,8 @@ where
             .val_epoch_map
             .get_cert_pubkeys(&epoch)
             .expect("vote message was verified");
+        self.block_timestamp
+            .vote_received(&author, vote_msg.vote.round);
         let (maybe_qc, vote_state_cmds) = self.consensus.vote_state.process_vote(
             &author,
             &vote_msg,
@@ -636,7 +656,10 @@ where
             debug!(?qc, "Created QC");
             self.metrics.consensus_events.created_qc += 1;
 
+            // TODO handle validatoin via round
             cmds.extend(self.process_certificate_qc(&qc));
+
+            self.block_timestamp.qc_ready(vote_msg.vote.round);
             cmds.extend(self.try_propose());
         };
 
@@ -863,6 +886,9 @@ where
             message: ProtocolMessage::Vote(vote_msg),
         }
         .sign(self.keypair);
+        if next_leader != *self.nodeid {
+            self.block_timestamp.vote_sent(&next_leader, round);
+        }
         let send_cmd = ConsensusCommand::Publish {
             target: RouterTarget::PointToPoint(next_leader),
             message: msg,
@@ -1203,7 +1229,7 @@ where
         // verify timestamp here
         if self
             .block_timestamp
-            .valid_block_timestamp(
+            .validate_block_timestamp(
                 parent_timestamp,
                 validated_block.get_timestamp(),
                 self.config
@@ -1213,13 +1239,13 @@ where
                     .vote_pace
                     .as_nanos(),
             )
-            .is_none()
+            .is_err()
         {
             self.metrics.consensus_events.failed_ts_validation += 1;
             warn!(
                 prev_block_ts = ?parent_timestamp,
                 curr_block_ts = ?validated_block.get_timestamp(),
-                local_ts = ?self.block_timestamp.get_current_time(),
+                local_ts = ?self.block_timestamp.get_adjusted_time(),
                 "Timestamp validation failed"
             );
             return cmds;
@@ -1371,14 +1397,17 @@ where
             if let Some(extending_block) = pending_blocktree_blocks.last() {
                 (
                     extending_block.get_seq_num() + SeqNum(1),
-                    self.block_timestamp
-                        .get_valid_block_timestamp(extending_block.get_timestamp()),
+                    max(
+                        extending_block.get_timestamp() + 1,
+                        self.block_timestamp.get_adjusted_time().as_nanos(),
+                    ),
                 )
             } else {
                 (
                     self.consensus.pending_block_tree.root().seq_num + SeqNum(1),
-                    self.block_timestamp.get_valid_block_timestamp(
-                        self.consensus.pending_block_tree.root().timestamp_ns,
+                    max(
+                        self.consensus.pending_block_tree.root().timestamp_ns + 1,
+                        self.block_timestamp.get_adjusted_time().as_nanos(),
                     ),
                 )
             };
@@ -1405,6 +1434,7 @@ where
             ?high_qc,
             ?try_propose_seq_num,
             ?last_round_tc,
+            ?timestamp_ns,
             "emitting create proposal command to txpool"
         );
 
@@ -1595,6 +1625,7 @@ mod test {
 
     use alloy_consensus::TxEnvelope;
     use itertools::Itertools;
+    use monad_blocktimestamp::timestamp::BlockTimestamp;
     use monad_chain_config::{
         revision::{ChainParams, MockChainRevision},
         MockChainConfig,
@@ -1614,6 +1645,7 @@ mod test {
         },
         block_validator::BlockValidator,
         checkpoint::RootInfo,
+        clock::{Clock, TestClock, TimestampAdjusterConfig},
         metrics::Metrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
         quorum_certificate::QuorumCertificate,
@@ -1655,8 +1687,8 @@ mod test {
     use tracing_test::traced_test;
 
     use crate::{
-        timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
-        ConsensusStateWrapper, OutgoingVoteStatus,
+        ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
+        OutgoingVoteStatus,
     };
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
@@ -1676,7 +1708,7 @@ mod test {
     type BlockValidatorType =
         EthValidator<SignatureType, SignatureCollectionType, StateBackendType>;
 
-    struct NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
+    struct NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1688,6 +1720,7 @@ mod test {
         SBT: StateBackend + StateBackendTest,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CL: Clock,
     {
         consensus_state: ConsensusState<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>,
 
@@ -1701,7 +1734,7 @@ mod test {
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
-        block_timestamp: BlockTimestamp,
+        block_timestamp: BlockTimestamp<SCT::NodeIdPubKey, CL>,
         beneficiary: [u8; 20],
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig<MockChainConfig, MockChainRevision>,
@@ -1710,7 +1743,7 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT> NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>
+    impl<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL> NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1722,6 +1755,7 @@ mod test {
         SBT: StateBackend + StateBackendTest,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CL: Clock,
     {
         fn wrapped_state(
             &mut self,
@@ -1736,6 +1770,7 @@ mod test {
             BVT,
             MockChainConfig,
             MockChainRevision,
+            CL,
         > {
             ConsensusStateWrapper {
                 consensus: &mut self.consensus_state,
@@ -1905,6 +1940,7 @@ mod test {
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
+        CL: Clock,
     >(
         num_states: u32,
         valset_factory: VTF,
@@ -1915,7 +1951,7 @@ mod test {
         execution_delay: SeqNum,
     ) -> (
         EnvContext<ST, SCT, EPT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT>>,
+        Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, VTF, LT, CL>>,
     )
     where
         EPT::FinalizedHeader: MockableFinalizedHeader,
@@ -1932,7 +1968,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, EPT, BPT, SBT, BVT, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -1992,7 +2028,11 @@ mod test {
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     state_backend: state_backend(),
-                    block_timestamp: BlockTimestamp::new(1000, 1),
+                    block_timestamp: BlockTimestamp::new(
+                        1000,
+                        1,
+                        TimestampAdjusterConfig::Disabled,
+                    ),
                     beneficiary: Default::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
                     consensus_config,
@@ -2210,20 +2250,6 @@ mod test {
             .collect()
     }
 
-    fn find_timestamp_update_cmd<ST, SCT, EPT, BPT, SBT>(
-        cmds: &[ConsensusCommand<ST, SCT, EPT, BPT, SBT>],
-    ) -> Option<&ConsensusCommand<ST, SCT, EPT, BPT, SBT>>
-    where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        EPT: ExecutionProtocol,
-        BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
-    {
-        cmds.iter()
-            .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
-    }
-
     // genesis_qc start with "0" sequence number and Round(0)
     // hence round == seqnum if no round times out
     fn seqnum_to_round_no_tc(seq_num: SeqNum) -> Round {
@@ -2245,6 +2271,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -2304,6 +2331,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2348,6 +2376,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2396,6 +2425,7 @@ mod test {
         );
     }
 
+    #[traced_test]
     #[test]
     fn scheduled_vote_round() {
         let num_state = 4;
@@ -2409,6 +2439,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2426,56 +2457,6 @@ mod test {
         assert!(
             matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
-    }
-
-    #[ignore]
-    #[test]
-    fn timestamp_update_only_for_higher_round() {
-        let num_state = 4;
-        let execution_delay = SeqNum::MAX;
-        let (mut env, mut ctx) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            EthExecutionProtocol,
-            BlockPolicyType,
-            StateBackendType,
-            BlockValidatorType,
-            _,
-            _,
-        >(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
-            || EthValidator::new(0),
-            execution_delay,
-        );
-        let mut wrapped_state = ctx[0].wrapped_state();
-
-        // our initial starting logic has consensus in round 1 so the first proposal does not
-        // increase the round
-        let p1 = env.next_proposal_empty();
-        let (author, _, verified_message) = p1.destructure();
-        let _cmds = wrapped_state.handle_proposal_message(author, verified_message);
-
-        let p2 = env.next_proposal_empty();
-        let (author, _, verified_message) = p2.destructure();
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message.clone());
-        assert!(find_timestamp_update_cmd(&cmds).is_some());
-
-        // send same proposal again -- its valid but won't increase round so should not produce a
-        // timestamp delta
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_timestamp_update_cmd(&cmds).is_none());
-
-        for _ in 0..4 {
-            env.next_proposal_empty();
-        }
-        let p7 = env.next_proposal_empty();
-        let (author, _, verified_message) = p7.destructure();
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_timestamp_update_cmd(&cmds).is_some());
     }
 
     #[test]
@@ -2505,6 +2486,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2596,6 +2578,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2688,6 +2671,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2766,6 +2750,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -2977,6 +2962,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -3024,6 +3010,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -3101,6 +3088,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -3167,6 +3155,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3273,6 +3262,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3343,6 +3333,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3390,6 +3381,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3513,6 +3505,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state as u32,
             ValidatorSetFactory::default(),
@@ -3584,6 +3577,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -3652,6 +3646,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -3758,6 +3753,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -3855,6 +3851,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -3968,6 +3965,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4118,6 +4116,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4238,6 +4237,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_state,
             ValidatorSetFactory::default(),
@@ -4284,6 +4284,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4346,6 +4347,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4454,6 +4456,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4580,6 +4583,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4749,6 +4753,7 @@ mod test {
             EthValidator<SignatureType, SignatureCollectionType, InMemoryState>,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),
@@ -4844,6 +4849,7 @@ mod test {
             BlockValidatorType,
             _,
             _,
+            TestClock,
         >(
             num_states as u32,
             ValidatorSetFactory::default(),

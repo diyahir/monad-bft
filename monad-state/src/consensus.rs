@@ -15,6 +15,7 @@ use monad_consensus_types::{
         OptimisticPolicyCommit,
     },
     block_validator::BlockValidator,
+    clock::Clock,
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -23,9 +24,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    BlockSyncEvent, BlockTimestampEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand,
+    LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent,
+    TimeoutVariant, TimerCommand, TxPoolCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
@@ -45,7 +46,7 @@ use crate::{
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -57,6 +58,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
@@ -69,7 +71,7 @@ where
     leader_election: &'a LT,
     version: &'a MonadVersion,
 
-    block_timestamp: &'a BlockTimestamp,
+    block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey, CL>,
     block_validator: &'a BVT,
     beneficiary: &'a [u8; 20],
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -79,8 +81,8 @@ where
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -92,9 +94,10 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -108,7 +111,7 @@ where
             leader_election: &monad_state.leader_election,
             version: &monad_state.version,
 
-            block_timestamp: &monad_state.block_timestamp,
+            block_timestamp: &mut monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
@@ -293,6 +296,7 @@ where
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => {
                 consensus.metrics.consensus_events.creating_proposal += 1;
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
@@ -311,6 +315,9 @@ where
                     round_signature,
                 );
 
+                consensus
+                    .block_timestamp
+                    .update_create_proposal_ns(round, elapsed_ns);
                 let p = ProposalMessage {
                     block_header,
                     block_body,
@@ -538,7 +545,12 @@ where
                 parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::EnterRound {
                     epoch,
                     round,
-                }))
+                }));
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::BlockTimestampEvent(BlockTimestampEvent::TimestampEnterEpoch {
+                        epoch,
+                    }),
+                )));
             }
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
@@ -657,9 +669,6 @@ where
                 high_qc_round,
                 checkpoint,
             })),
-            ConsensusCommand::TimestampUpdate(t) => {
-                parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
-            }
             ConsensusCommand::ScheduleVote { duration, round } => {
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                     duration,

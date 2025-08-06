@@ -10,6 +10,7 @@ use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
+use monad_blocktimestamp::messages::message::{PingRequestMessage, PingResponseMessage};
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::signing::{Unvalidated, Unverified},
@@ -22,7 +23,7 @@ use monad_consensus_types::{
     checkpoint::Checkpoint,
     metrics::Metrics,
     payload::{ConsensusBlockBodyId, RoundSignature},
-    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
     validator_data::ValidatorSetDataWithEpoch,
@@ -70,6 +71,7 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockSyncRequestMessage),
     SendVote,
+    BlockTimestampPing,
 }
 
 #[derive(Debug)]
@@ -193,11 +195,6 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
-#[derive(Debug)]
-pub enum TimestampCommand {
-    AdjustDelta(TimestampAdjustment),
-}
-
 pub enum StateSyncCommand<ST, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -279,8 +276,6 @@ where
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand),
-    TimestampCommand(TimestampCommand),
-
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
     LoopbackCommand(LoopbackCommand<E>),
@@ -304,7 +299,6 @@ where
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand>,
-        Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<SCT>>,
         Vec<LoopbackCommand<E>>,
@@ -316,7 +310,6 @@ where
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
-        let mut timestamp_cmds = Vec::new();
         let mut txpool_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
@@ -330,7 +323,6 @@ where
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
-                Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
@@ -345,7 +337,6 @@ where
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,
             loopback_cmds,
@@ -505,6 +496,7 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
         proposed_execution_inputs: ProposedExecutionInputs<EPT>,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
+        elapsed_ns: u128,
     },
 
     /// Txs that are incoming via other nodes
@@ -530,6 +522,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 delayed_execution_results,
                 proposed_execution_inputs,
                 last_round_tc,
+                elapsed_ns,
             } => f
                 .debug_struct("Proposal")
                 .field("epoch", epoch)
@@ -541,6 +534,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
                 .field("delayed_execution_results", delayed_execution_results)
                 .field("proposed_execution_inputs", proposed_execution_inputs)
                 .field("last_round_tc", last_round_tc)
+                .field("elapsed_ns", elapsed_ns)
                 .finish(),
             Self::ForwardedTxs { sender, txs } => f
                 .debug_struct("ForwardedTxs")
@@ -999,6 +993,26 @@ where
     LoadError(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockTimestampEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    PingRequest {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        message: PingRequestMessage,
+    },
+    PingResponse {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        message: PingResponseMessage,
+    },
+    PingTick,
+    /// Event to update the timestamp round and epoch
+    TimestampEnterEpoch {
+        epoch: Epoch,
+    },
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug)]
 pub enum MonadEvent<ST, SCT, EPT>
@@ -1020,11 +1034,13 @@ where
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
-    TimestampUpdateEvent(u128),
+    TimestampUpdateEvent(u64),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<SCT>),
+    /// Validator latency pings/pongs and BlockTimestamp updates
+    BlockTimestampEvent(BlockTimestampEvent<SCT>),
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1080,6 +1096,9 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::BlockTimestampEvent(event) => {
+                MonadEvent::BlockTimestampEvent(event.clone())
+            }
         }
     }
 }
@@ -1146,6 +1165,7 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::BlockTimestampEvent(_) => "BLOCKTIMESTAMP".to_string(),
         };
 
         write!(f, "{}", s)

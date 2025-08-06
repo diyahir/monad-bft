@@ -33,6 +33,12 @@ where
                 VerifiedMonadMessage::StateSyncMessage(msg) => {
                     proto_monad_message::OneofMessage::StateSyncMessage(msg.into())
                 }
+                VerifiedMonadMessage::PingRequest(msg) => {
+                    proto_monad_message::OneofMessage::PingRequest(msg.into())
+                }
+                VerifiedMonadMessage::PingResponse(msg) => {
+                    proto_monad_message::OneofMessage::PingResponse(msg.into())
+                }
             }),
         }
     }
@@ -62,6 +68,12 @@ where
             }
             Some(proto_monad_message::OneofMessage::StateSyncMessage(msg)) => {
                 MonadMessage::StateSyncMessage(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::PingRequest(msg)) => {
+                MonadMessage::PingRequest(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::PingResponse(msg)) => {
+                MonadMessage::PingResponse(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

@@ -11,44 +11,22 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, TimestampCommand};
+use monad_executor_glue::MonadEvent;
 use monad_types::ExecutionProtocol;
 use tokio::time::{Duration, Interval};
-
-use crate::timestamp::TimestampAdjuster;
 
 pub struct TokioTimestamp<ST, SCT, EPT> {
     /// create timestamp events at this interval
     interval: Interval,
-    adjuster: TimestampAdjuster,
-    metrics: ExecutorMetrics,
     _phantom: PhantomData<(ST, SCT, EPT)>,
 }
 
 impl<ST, SCT, EPT> TokioTimestamp<ST, SCT, EPT> {
-    pub fn new(period: Duration, max_delta_ns: u128, adjustment_period: usize) -> Self {
+    pub fn new(period: Duration) -> Self {
         Self {
             interval: tokio::time::interval(period),
-            adjuster: TimestampAdjuster::new(max_delta_ns, adjustment_period),
-            metrics: Default::default(),
             _phantom: PhantomData,
         }
-    }
-}
-
-impl<ST, SCT, EPT> Executor for TokioTimestamp<ST, SCT, EPT> {
-    type Command = TimestampCommand;
-
-    fn exec(&mut self, commands: Vec<Self::Command>) {
-        for command in commands {
-            match command {
-                TimestampCommand::AdjustDelta(t) => self.adjuster.handle_adjustment(t),
-            }
-        }
-    }
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
     }
 }
 
@@ -69,8 +47,7 @@ where
                 let epoch_time = start
                     .duration_since(UNIX_EPOCH)
                     .expect("Clock may have gone backwards");
-                let t = epoch_time.as_nanos();
-                // t += self.adjuster.get_adjustment();
+                let t = epoch_time.as_nanos() as u64;
                 Poll::Ready(Some(MonadEvent::TimestampUpdateEvent(t)))
             }
             Poll::Pending => Poll::Pending,
