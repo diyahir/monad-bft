@@ -16,7 +16,7 @@
 use crate::{
     ffi::{
         monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_exec_block_start,
-        monad_exec_txn_evm_output,
+        monad_exec_txn_evm_output, monad_c_access_list_entry,
     },
     ExecutedTxnCallFrame, ExecutedTxnLog,
 };
@@ -36,4 +36,7 @@ pub(super) struct TxnReassemblyState {
     pub logs: Vec<ExecutedTxnLog>,
     pub output: Option<monad_exec_txn_evm_output>,
     pub call_frames: Option<Vec<ExecutedTxnCallFrame>>,
+    // Access list assembly buffers
+    pub access_list_accounts: Vec<monad_c_access_list_entry>,
+    pub access_list_storage_keys: Vec<Vec<monad_c_bytes32>>, // per-account storage keys
 }

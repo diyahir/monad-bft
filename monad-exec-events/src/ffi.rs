@@ -32,7 +32,7 @@ pub use self::bindings::{
     monad_exec_block_start, monad_exec_block_tag, monad_exec_block_verified, monad_exec_evm_error,
     monad_exec_storage_access, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
     monad_exec_txn_log, monad_exec_txn_reject, monad_exec_txn_start, MONAD_TXN_EIP1559,
-    MONAD_TXN_EIP2930, MONAD_TXN_LEGACY,
+    MONAD_TXN_EIP2930, MONAD_TXN_LEGACY, monad_c_access_list_entry,
 };
 
 #[allow(dead_code, missing_docs, non_camel_case_types, non_upper_case_globals)]

@@ -88,9 +88,6 @@ impl ExecutedBlockBuilder {
             | ExecEventRef::BlockQC(_)
             | ExecEventRef::BlockFinalized(_)
             | ExecEventRef::BlockVerified(_)
-            | ExecEventRef::AccountAccessListHeader(_)
-            | ExecEventRef::AccountAccess(_)
-            | ExecEventRef::StorageAccess(_)
             | ExecEventRef::TxnPerfEvmEnter
             | ExecEventRef::TxnPerfEvmExit => None,
 
@@ -110,14 +107,81 @@ impl ExecutedBlockBuilder {
             | ExecEvent::BlockQC(_)
             | ExecEvent::BlockFinalized(_)
             | ExecEvent::BlockVerified(_)
-            | ExecEvent::AccountAccessListHeader(_)
-            | ExecEvent::AccountAccess(_)
-            | ExecEvent::StorageAccess(_)
             | ExecEvent::TxnPerfEvmEnter
             | ExecEvent::TxnPerfEvmExit => unreachable!(),
 
             ExecEvent::TxnCallFrame { .. } if !self.include_call_frames => unreachable!(),
 
+            ExecEvent::AccountAccessListHeader { txn_index, header } => {
+                let state = self.state.as_mut()?;
+
+                let txn_ref = state
+                    .txns
+                    .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
+                    .expect("ExecutedBlockBuilder AccountAccessListHeader txn_index within bounds")
+                    .as_mut()
+                    .expect("ExecutedBlockBuilder AccountAccessListHeader after TxnStart");
+
+                // Prepare account slot for storage keys; header contains access_list_count but we build dynamically
+                let account_index = txn_ref.access_list_accounts.len();
+                txn_ref.access_list_accounts.push(ffi::monad_c_access_list_entry {
+                    address: header.address,
+                    storage_key_count: 0,
+                });
+                txn_ref.access_list_storage_keys.push(Vec::new());
+
+                debug_assert_eq!(account_index + 1, txn_ref.access_list_accounts.len());
+
+                None
+            }
+            ExecEvent::AccountAccess { txn_index, account_index, access } => {
+                let state = self.state.as_mut()?;
+
+                let txn_ref = state
+                    .txns
+                    .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
+                    .expect("ExecutedBlockBuilder AccountAccess txn_index within bounds")
+                    .as_mut()
+                    .expect("ExecutedBlockBuilder AccountAccess after TxnStart");
+
+                // Ensure storage vector exists up to account_index
+                if txn_ref.access_list_storage_keys.len() <= account_index {
+                    txn_ref
+                        .access_list_storage_keys
+                        .resize_with(account_index + 1, Vec::new);
+                }
+                if txn_ref.access_list_accounts.len() <= account_index {
+                    txn_ref
+                        .access_list_accounts
+                        .resize(account_index + 1, ffi::monad_c_access_list_entry {
+                            address: ffi::monad_c_address { bytes: [0; 20] },
+                            storage_key_count: 0,
+                        });
+                }
+                // Set address (AccountAccess provides address); header is already added earlier too
+                txn_ref.access_list_accounts[account_index].address = access.address;
+
+                None
+            }
+            ExecEvent::StorageAccess { txn_index, account_index, storage } => {
+                let state = self.state.as_mut()?;
+
+                let txn_ref = state
+                    .txns
+                    .get_mut(TryInto::<usize>::try_into(txn_index).unwrap())
+                    .expect("ExecutedBlockBuilder StorageAccess txn_index within bounds")
+                    .as_mut()
+                    .expect("ExecutedBlockBuilder StorageAccess after TxnStart");
+
+                if txn_ref.access_list_storage_keys.len() <= account_index {
+                    txn_ref
+                        .access_list_storage_keys
+                        .resize_with(account_index + 1, Vec::new);
+                }
+                txn_ref.access_list_storage_keys[account_index].push(storage.slot);
+
+                None
+            }
             ExecEvent::BlockStart(block_header) => {
                 if let Some(dropped_state) = self.state.take() {
                     return Some(Err(BlockBuilderError::ImplicitDrop {
@@ -171,11 +235,20 @@ impl ExecutedBlockBuilder {
                                  logs,
                                  output,
                                  call_frames,
+                                 mut access_list_accounts,
+                                 access_list_storage_keys,
                              }| {
                                 let output = output
                                     .expect("ExecutedBlockBuilder received TxnEvmOutput for txn");
 
                                 assert_eq!(logs.len(), output.receipt.log_count as usize);
+
+                                // finalize access list counts by assigning per-account storage counts
+                                for (idx, keys) in access_list_storage_keys.iter().enumerate() {
+                                    if idx < access_list_accounts.len() {
+                                        access_list_accounts[idx].storage_key_count = keys.len() as u32;
+                                    }
+                                }
 
                                 ExecutedTxn {
                                     hash,
@@ -192,6 +265,11 @@ impl ExecutedBlockBuilder {
 
                                         Vec::into_boxed_slice(call_frames)
                                     }),
+                                    access_list_accounts: access_list_accounts.into_boxed_slice(),
+                                    access_list_storage_keys: access_list_storage_keys
+                                        .into_iter()
+                                        .map(Vec::into_boxed_slice)
+                                        .collect(),
                                 }
                             },
                         )
@@ -202,6 +280,7 @@ impl ExecutedBlockBuilder {
                 txn_index: index,
                 txn_start,
                 data_bytes,
+                access_list_bytes,
             } => {
                 let state = self.state.as_mut()?;
 
@@ -219,6 +298,30 @@ impl ExecutedBlockBuilder {
 
                 assert!(txn_ref.is_none());
 
+                // Parse access list trailing bytes if access_list_count > 0
+                let mut access_list_accounts = Vec::new();
+                let mut access_list_storage_keys = Vec::new();
+                if txn_header.access_list_count > 0 {
+                    let mut cursor = access_list_bytes;
+                    for _ in 0..txn_header.access_list_count {
+                        // Read one monad_c_access_list_entry
+                        let (entry, rest) = crate::events::bytes::split_ref_from_bytes::<ffi::monad_c_access_list_entry>(cursor)
+                            .expect("valid access list entry bytes");
+                        cursor = rest;
+                        let storage_count = entry.storage_key_count as usize;
+                        let mut keys = Vec::with_capacity(storage_count);
+                        for _ in 0..storage_count {
+                            let (key, r2) = crate::events::bytes::split_ref_from_bytes::<monad_c_bytes32>(cursor)
+                                .expect("valid storage key bytes");
+                            keys.push(*key);
+                            cursor = r2;
+                        }
+                        access_list_accounts.push(*entry);
+                        access_list_storage_keys.push(keys);
+                    }
+                    debug_assert!(cursor.is_empty(), "access_list_bytes had trailing data");
+                }
+
                 *txn_ref = Some(TxnReassemblyState {
                     hash: txn_hash,
                     sender,
@@ -227,6 +330,8 @@ impl ExecutedBlockBuilder {
                     logs: Vec::default(),
                     output: None,
                     call_frames: self.include_call_frames.then(Vec::default),
+                    access_list_accounts,
+                    access_list_storage_keys,
                 });
 
                 None

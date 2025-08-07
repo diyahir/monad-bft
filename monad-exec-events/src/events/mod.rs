@@ -55,6 +55,7 @@ pub enum ExecEvent {
         txn_index: usize,
         txn_start: monad_exec_txn_start,
         data_bytes: Box<[u8]>,
+        access_list_bytes: Box<[u8]>,
     },
     TxnReject {
         txn_index: usize,
@@ -79,9 +80,20 @@ pub enum ExecEvent {
         return_bytes: Box<[u8]>,
     },
     TxnEnd,
-    AccountAccessListHeader(monad_exec_account_access_list_header),
-    AccountAccess(monad_exec_account_access),
-    StorageAccess(monad_exec_storage_access),
+    AccountAccessListHeader {
+        txn_index: usize,
+        header: monad_exec_account_access_list_header,
+    },
+    AccountAccess {
+        txn_index: usize,
+        account_index: usize,
+        access: monad_exec_account_access,
+    },
+    StorageAccess {
+        txn_index: usize,
+        account_index: usize,
+        storage: monad_exec_storage_access,
+    },
     EvmError(monad_exec_evm_error),
 }
 
@@ -106,6 +118,7 @@ pub enum ExecEventRef<'ring> {
         txn_index: usize,
         txn_start: &'ring monad_exec_txn_start,
         data_bytes: &'ring [u8],
+        access_list_bytes: &'ring [u8],
     },
     TxnReject {
         txn_index: usize,
@@ -130,9 +143,20 @@ pub enum ExecEventRef<'ring> {
         return_bytes: &'ring [u8],
     },
     TxnEnd,
-    AccountAccessListHeader(&'ring monad_exec_account_access_list_header),
-    AccountAccess(&'ring monad_exec_account_access),
-    StorageAccess(&'ring monad_exec_storage_access),
+    AccountAccessListHeader {
+        txn_index: usize,
+        header: &'ring monad_exec_account_access_list_header,
+    },
+    AccountAccess {
+        txn_index: usize,
+        account_index: usize,
+        access: &'ring monad_exec_account_access,
+    },
+    StorageAccess {
+        txn_index: usize,
+        account_index: usize,
+        storage: &'ring monad_exec_storage_access,
+    },
     EvmError(&'ring monad_exec_evm_error),
 }
 
@@ -152,10 +176,12 @@ impl<'ring> ExecEventRef<'ring> {
                 txn_index,
                 txn_start,
                 data_bytes,
+                access_list_bytes,
             } => ExecEvent::TxnStart {
                 txn_index,
                 txn_start: *txn_start,
                 data_bytes: data_bytes.to_vec().into_boxed_slice(),
+                access_list_bytes: access_list_bytes.to_vec().into_boxed_slice(),
             },
             Self::TxnReject { txn_index, reject } => ExecEvent::TxnReject {
                 txn_index,
@@ -190,11 +216,20 @@ impl<'ring> ExecEventRef<'ring> {
                 return_bytes: return_bytes.to_vec().into_boxed_slice(),
             },
             Self::TxnEnd => ExecEvent::TxnEnd,
-            Self::AccountAccessListHeader(account_access_list_header) => {
-                ExecEvent::AccountAccessListHeader(*account_access_list_header)
-            }
-            Self::AccountAccess(account_access) => ExecEvent::AccountAccess(*account_access),
-            Self::StorageAccess(storage_access) => ExecEvent::StorageAccess(*storage_access),
+            Self::AccountAccessListHeader { txn_index, header } => ExecEvent::AccountAccessListHeader {
+                txn_index,
+                header: *header,
+            },
+            Self::AccountAccess { txn_index, account_index, access } => ExecEvent::AccountAccess {
+                txn_index,
+                account_index,
+                access: *access,
+            },
+            Self::StorageAccess { txn_index, account_index, storage } => ExecEvent::StorageAccess {
+                txn_index,
+                account_index,
+                storage: *storage,
+            },
             Self::EvmError(evm_error) => ExecEvent::EvmError(*evm_error),
         }
     }
@@ -274,6 +309,11 @@ impl EventDecoder for ExecEventDecoder {
                     })
                     .expect("TxnStart event valid");
 
+                let header_size = std::mem::size_of::<monad_exec_txn_start>();
+                let data_len: usize = txn_start.txn_header.data_length.try_into().unwrap();
+                assert!(bytes.len() >= header_size + data_len);
+                let access_list_bytes = &bytes[header_size + data_len..];
+
                 ExecEventRef::TxnStart {
                     txn_index: info
                         .flow_info
@@ -281,6 +321,7 @@ impl EventDecoder for ExecEventDecoder {
                         .expect("TxnStart event has txn_idx in flow_info"),
                     txn_start,
                     data_bytes,
+                    access_list_bytes,
                 }
             }
             ffi::MONAD_EXEC_TXN_REJECT => ExecEventRef::TxnReject {
@@ -354,15 +395,35 @@ impl EventDecoder for ExecEventDecoder {
                 assert_eq!(bytes.len(), 0, "TxnEnd payload is empty");
                 ExecEventRef::TxnEnd
             }
-            ffi::MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER => ExecEventRef::AccountAccessListHeader(
-                ref_from_bytes(bytes).expect("AccountAccessListHeader event valid"),
-            ),
-            ffi::MONAD_EXEC_ACCOUNT_ACCESS => ExecEventRef::AccountAccess(
-                ref_from_bytes(bytes).expect("AccountAccess event valid"),
-            ),
-            ffi::MONAD_EXEC_STORAGE_ACCESS => ExecEventRef::StorageAccess(
-                ref_from_bytes(bytes).expect("StorageAccess event valid"),
-            ),
+            ffi::MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER => ExecEventRef::AccountAccessListHeader {
+                txn_index: info
+                    .flow_info
+                    .txn_idx
+                    .expect("AccountAccessListHeader event has txn_idx in flow_info"),
+                header: ref_from_bytes(bytes).expect("AccountAccessListHeader event valid"),
+            },
+            ffi::MONAD_EXEC_ACCOUNT_ACCESS => ExecEventRef::AccountAccess {
+                txn_index: info
+                    .flow_info
+                    .txn_idx
+                    .expect("AccountAccess event has txn_idx in flow_info"),
+                account_index: info
+                    .flow_info
+                    .account_idx
+                    .expect("AccountAccess event has account_idx in flow_info"),
+                access: ref_from_bytes(bytes).expect("AccountAccess event valid"),
+            },
+            ffi::MONAD_EXEC_STORAGE_ACCESS => ExecEventRef::StorageAccess {
+                txn_index: info
+                    .flow_info
+                    .txn_idx
+                    .expect("StorageAccess event has txn_idx in flow_info"),
+                account_index: info
+                    .flow_info
+                    .account_idx
+                    .expect("StorageAccess event has account_idx in flow_info"),
+                storage: ref_from_bytes(bytes).expect("StorageAccess event valid"),
+            },
             ffi::MONAD_EXEC_EVM_ERROR => {
                 ExecEventRef::EvmError(ref_from_bytes(bytes).expect("EvmError event valid"))
             }

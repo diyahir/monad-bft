@@ -20,7 +20,7 @@ use itertools::Itertools;
 use crate::ffi;
 use crate::ffi::{
     monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_exec_block_end,
-    monad_exec_block_start, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
+    monad_exec_block_start, monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_c_access_list_entry,
 };
 
 /// Block reconstructed from execution events.
@@ -155,6 +155,10 @@ pub struct ExecutedTxn {
     pub logs: Box<[ExecutedTxnLog]>,
     pub output: monad_exec_txn_evm_output,
     pub call_frames: Option<Box<[ExecutedTxnCallFrame]>>,
+    // Access list from event-ring (one entry per accessed account)
+    pub access_list_accounts: Box<[monad_c_access_list_entry]>,
+    // Per-account storage keys (parallel to access_list_accounts by index)
+    pub access_list_storage_keys: Box<[Box<[monad_c_bytes32]>]>,
 }
 
 #[cfg(feature = "alloy")]
@@ -212,8 +216,23 @@ impl ExecutedTxn {
                         to,
                         value,
                         access_list: {
-                            // TODO(andr-dev): Add access list
-                            alloy_rpc_types::AccessList(Vec::default())
+                            let items: Vec<_> = self
+                                .access_list_accounts
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, entry)| {
+                                    let address = alloy_primitives::Address::from(entry.address.bytes);
+                                    let keys: Vec<alloy_primitives::B256> = self
+                                        .access_list_storage_keys
+                                        .get(idx)
+                                        .map(|keys| {
+                                            keys.iter().map(|k| alloy_primitives::B256::from(k.bytes)).collect()
+                                        })
+                                        .unwrap_or_default();
+                                    alloy_rpc_types::AccessListItem { address, storage_keys: keys }
+                                })
+                                .collect();
+                            alloy_rpc_types::AccessList(items)
                         },
                         input,
                     },
@@ -236,8 +255,23 @@ impl ExecutedTxn {
                         to,
                         value,
                         access_list: {
-                            // TODO(andr-dev): Add access list
-                            alloy_rpc_types::AccessList(Vec::default())
+                            let items: Vec<_> = self
+                                .access_list_accounts
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, entry)| {
+                                    let address = alloy_primitives::Address::from(entry.address.bytes);
+                                    let keys: Vec<alloy_primitives::B256> = self
+                                        .access_list_storage_keys
+                                        .get(idx)
+                                        .map(|keys| {
+                                            keys.iter().map(|k| alloy_primitives::B256::from(k.bytes)).collect()
+                                        })
+                                        .unwrap_or_default();
+                                    alloy_rpc_types::AccessListItem { address, storage_keys: keys }
+                                })
+                                .collect();
+                            alloy_rpc_types::AccessList(items)
                         },
                         input,
                     },

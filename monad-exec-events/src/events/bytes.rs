@@ -17,7 +17,7 @@ use std::mem::MaybeUninit;
 
 /// Safely casts the beginning chunk of the provided byte slice `bytes` into a `&T` if possible,
 /// producing the remaining half of the slice alongside in a tuple.
-fn split_ref_from_bytes<T>(bytes: &'_ [u8]) -> Result<(&'_ T, &'_ [u8]), String> {
+pub(crate) fn split_ref_from_bytes<T>(bytes: &'_ [u8]) -> Result<(&'_ T, &'_ [u8]), String> {
     let Some((bytes, rest)) = bytes.split_at_checked(size_of::<T>()) else {
         return Err(format!(
             "Expected slice with length at least {} but slice has length {}",
