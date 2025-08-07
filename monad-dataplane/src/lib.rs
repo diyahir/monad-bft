@@ -33,6 +33,13 @@ pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum UdpPriority {
+    High = 0,
+    Regular = 1,
+}
+
 pub struct DataplaneBuilder {
     local_addr: SocketAddr,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
@@ -143,7 +150,10 @@ impl BroadcastMsg {
         self.targets.len()
     }
 
-    fn into_iter(self) -> impl Iterator<Item = (SocketAddr, UdpMsg)> {
+    fn into_iter_with_priority(
+        self,
+        priority: UdpPriority,
+    ) -> impl Iterator<Item = (SocketAddr, UdpMsg)> {
         let Self {
             targets,
             payload,
@@ -155,6 +165,7 @@ impl BroadcastMsg {
                 UdpMsg {
                     payload: payload.clone(),
                     stride,
+                    priority,
                 },
             )
         })
@@ -172,10 +183,21 @@ impl UnicastMsg {
         self.msgs.len()
     }
 
-    fn into_iter(self) -> impl Iterator<Item = (SocketAddr, UdpMsg)> {
+    fn into_iter_with_priority(
+        self,
+        priority: UdpPriority,
+    ) -> impl Iterator<Item = (SocketAddr, UdpMsg)> {
         let Self { msgs, stride } = self;
-        msgs.into_iter()
-            .map(move |(dst, payload)| (dst, UdpMsg { payload, stride }))
+        msgs.into_iter().map(move |(dst, payload)| {
+            (
+                dst,
+                UdpMsg {
+                    payload,
+                    stride,
+                    priority,
+                },
+            )
+        })
     }
 }
 
@@ -200,6 +222,7 @@ pub struct TcpMsg {
 pub struct UdpMsg {
     pub payload: Bytes,
     pub stride: u16,
+    pub priority: UdpPriority,
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
@@ -228,8 +251,16 @@ impl Dataplane {
         self.writer.udp_write_broadcast(msg);
     }
 
+    pub fn udp_write_broadcast_with_priority(&self, msg: BroadcastMsg, priority: UdpPriority) {
+        self.writer.udp_write_broadcast_with_priority(msg, priority);
+    }
+
     pub fn udp_write_unicast(&self, msg: UnicastMsg) {
         self.writer.udp_write_unicast(msg);
+    }
+
+    pub fn udp_write_unicast_with_priority(&self, msg: UnicastMsg, priority: UdpPriority) {
+        self.writer.udp_write_unicast_with_priority(msg, priority);
     }
 
     pub fn ready(&self) -> bool {
@@ -338,16 +369,24 @@ impl DataplaneWriter {
         }
     }
 
+    pub fn udp_write_broadcast(&self, msg: BroadcastMsg) {
+        self.udp_write_broadcast_with_priority(msg, UdpPriority::Regular);
+    }
+
+    pub fn udp_write_unicast(&self, msg: UnicastMsg) {
+        self.udp_write_unicast_with_priority(msg, UdpPriority::Regular);
+    }
+
     #[tracing::instrument(
         level="trace", 
         skip_all,
-        fields(len = msg.payload.len(), targets = msg.targets.len())
+        fields(len = msg.payload.len(), targets = msg.targets.len(), priority = ?priority)
     )]
-    pub fn udp_write_broadcast(&self, msg: BroadcastMsg) {
+    pub fn udp_write_broadcast_with_priority(&self, msg: BroadcastMsg, priority: UdpPriority) {
         let mut pending_count = msg.msg_count();
         let msg_len = msg.payload.len();
 
-        for (dst, udp_msg) in msg.into_iter() {
+        for (dst, udp_msg) in msg.into_iter_with_priority(priority) {
             match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
                 Ok(()) => {
                     pending_count -= 1;
@@ -372,6 +411,7 @@ impl DataplaneWriter {
             num_msgs_dropped = pending_count,
             total_udp_msgs_dropped = udp_msgs_dropped,
             msg_length = msg_len,
+            ?priority,
             "udp_egress_tx channel full, dropping message"
         );
     }
@@ -379,12 +419,12 @@ impl DataplaneWriter {
     #[tracing::instrument(
         level="trace", 
         skip_all,
-        fields(msgs = msg.msgs.len())
+        fields(msgs = msg.msgs.len(), priority = ?priority)
     )]
-    pub fn udp_write_unicast(&self, msg: UnicastMsg) {
+    pub fn udp_write_unicast_with_priority(&self, msg: UnicastMsg, priority: UdpPriority) {
         let mut pending_count = msg.msg_count();
 
-        for (dst, udp_msg) in msg.into_iter() {
+        for (dst, udp_msg) in msg.into_iter_with_priority(priority) {
             match self.inner.udp_egress_tx.try_send((dst, udp_msg)) {
                 Ok(()) => {
                     pending_count -= 1;
@@ -408,6 +448,7 @@ impl DataplaneWriter {
         warn!(
             num_msgs_dropped = pending_count,
             total_udp_msgs_dropped = udp_msgs_dropped,
+            ?priority,
             "udp_egress_tx channel full, dropping message"
         );
     }
