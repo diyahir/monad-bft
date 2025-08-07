@@ -282,6 +282,10 @@ pub trait PeerDiscoveryAlgo {
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
 
+    fn get_fullnode_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
+
     fn get_name_records(
         &self,
     ) -> HashMap<

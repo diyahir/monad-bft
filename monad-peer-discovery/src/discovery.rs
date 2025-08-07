@@ -1122,6 +1122,19 @@ where
             .collect()
     }
 
+    fn get_fullnode_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+        let empty = BTreeSet::new();
+        let curr_validators = self
+            .epoch_validators
+            .get(&self.current_epoch)
+            .unwrap_or(&empty);
+        self.routing_info
+            .iter()
+            .filter(|(id, _)| !curr_validators.contains(id))
+            .map(|(id, name_record)| (*id, name_record.address()))
+            .collect()
+    }
+
     fn get_name_records(
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>> {
@@ -1843,5 +1856,25 @@ mod tests {
         } else {
             assert!(cmds.is_empty());
         }
+    }
+
+    #[test]
+    fn test_get_fullnode_addrs() {
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer2 = &keys[2];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+
+        let mut state = generate_test_state(peer0, vec![peer1, peer2]);
+        state
+            .epoch_validators
+            .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
+
+        let addrs = state.get_fullnode_addrs();
+        assert_eq!(addrs.len(), 1);
+        assert!(!addrs.contains_key(&peer1_pubkey));
+        assert!(addrs.contains_key(&peer2_pubkey));
     }
 }

@@ -334,18 +334,19 @@ where
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         {
-                            let known_addresses = {
-                                self.peer_discovery_driver
-                                    .lock()
-                                    .unwrap()
-                                    .get_known_addresses()
-                            };
-                            let nodes: Vec<_> = known_addresses.keys().copied().collect();
+                            let full_nodes: Vec<_> = self
+                                .peer_discovery_driver
+                                .lock()
+                                .unwrap()
+                                .get_fullnode_addrs()
+                                .keys()
+                                .copied()
+                                .collect();
                             trace!(
                                 "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
-                                nodes.len()
+                                full_nodes.len()
                             );
-                            publisher.upsert_peer_disc_full_nodes(FullNodes::new(nodes));
+                            publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes));
                         }
 
                         if let Some((group_msg, full_nodes_set)) =
@@ -355,7 +356,7 @@ where
                                 self.peer_discovery_driver
                                     .lock()
                                     .unwrap()
-                                    .get_known_addresses()
+                                    .get_fullnode_addrs()
                             };
 
                             // if group_msg is a ConfirmGroup message, update peer discovery with the group information
