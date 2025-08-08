@@ -4781,6 +4781,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-archive-v2"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types",
+ "alloy-signer",
+ "alloy-signer-local",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "clap 4.5.40",
+ "dashmap",
+ "enum_dispatch",
+ "eyre",
+ "futures",
+ "hex",
+ "monad-triedb-utils",
+ "monad-types",
+ "mongodb",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "rand 0.8.5",
+ "rayon",
+ "regex",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-retry",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "monad-block-persist"
 version = "0.1.0"
 dependencies = [
