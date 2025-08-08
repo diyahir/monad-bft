@@ -169,6 +169,7 @@ impl Config {
             NullGen => 0,
             Uniswap => 10,
             HighCallDataLowGasLimit => 30,
+            ReserveBalance => 1,
         }
     }
 
@@ -183,7 +184,8 @@ impl Config {
             | Duplicates
             | RandomPriorityFee
             | NonDeterministicStorage
-            | StorageDeletes => 100,
+            | StorageDeletes
+            | ReserveBalance => 100,
             NullGen | SelfDestructs | HighCallData | ECMul => 10,
             HighCallDataLowGasLimit => 3,
             Uniswap => 20,
@@ -201,7 +203,8 @@ impl Config {
             | Duplicates
             | RandomPriorityFee
             | NonDeterministicStorage
-            | StorageDeletes => 2500,
+            | StorageDeletes
+            | ReserveBalance => 2500,
             NullGen => 100,
             SelfDestructs | HighCallData | HighCallDataLowGasLimit | ECMul => 100,
             Uniswap => 200,
@@ -229,6 +232,7 @@ impl Config {
             GenMode::NullGen => None,
             GenMode::ECMul => ECMUL,
             GenMode::Uniswap => Uniswap,
+            GenMode::ReserveBalance => None,
         }
     }
 
@@ -297,6 +301,7 @@ pub enum GenMode {
     NullGen,
     ECMul,
     Uniswap,
+    ReserveBalance,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]
