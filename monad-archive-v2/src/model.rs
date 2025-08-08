@@ -1,9 +1,7 @@
 use alloy_primitives::{hex::ToHexExt, Address, TxHash};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use alloy_rpc_types::{Log, Topic};
-use bytes::BufMut;
 use mongodb::bson::{self, Bson};
-use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
