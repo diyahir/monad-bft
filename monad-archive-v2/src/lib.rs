@@ -15,7 +15,8 @@
 
 #![allow(async_fn_in_trait, clippy::too_many_arguments)]
 
+pub mod versioned;
 pub mod model;
 pub mod object_store;
 pub mod prelude;
-pub mod mongo_model;
+// pub mod mongo_model;

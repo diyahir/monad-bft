@@ -5,9 +5,10 @@ use mongodb::{
 use serde::de::DeserializeOwned;
 
 use crate::{
-    model::{make_block, BlockData, BlockReader, Tx, Versioned},
+    model::{make_block, BlockData, BlockReader, Tx},
     mongo_model::{MongoImplInternal, StorageMode},
     prelude::*,
+    versioned::Versioned,
 };
 
 use super::{
@@ -16,13 +17,21 @@ use super::{
 };
 
 impl<BR: BlockReader> MongoImpl<BR> {
-    pub async fn new(uri: String, replica_name: String, block_reader: BR, max_retries: usize) -> Result<Self> {
+    pub async fn new(
+        uri: String,
+        replica_name: String,
+        block_reader: BR,
+        max_retries: usize,
+    ) -> Result<Self> {
         let client = Client::with_uri_str(uri)
             .await
             .wrap_err("Failed to connect to MongoDB")?;
         let db = client.database(&replica_name);
-        let headers = db.collection("headers");
+
         let txs = db.collection("txs");
+        let headers = db.collection("headers");
+        // Document type is different but in same collection as headers
+        let latest = headers.clone_with_type::<LatestDoc>();
 
         Ok(Self {
             inner: Arc::new(MongoImplInternal {
@@ -30,6 +39,7 @@ impl<BR: BlockReader> MongoImpl<BR> {
                 db,
                 replica_name,
                 headers,
+                latest,
                 txs,
                 block_reader,
                 max_retries,

@@ -8,7 +8,7 @@ use alloy_rlp::{Decodable, Encodable};
 use mongodb::bson::{self, doc, Bson};
 use serde::{Deserialize, Serialize};
 
-use crate::{model::Versioned, prelude::*};
+use crate::{prelude::*, versioned::Versioned};
 
 /// Wrapper around u64 to allow for bson serialization/deserialization as i64
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

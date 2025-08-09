@@ -1,32 +1,41 @@
-use std::future::IntoFuture;
-
 use futures::FutureExt;
-use mongodb::{
-    options::{BulkWriteOptions, WriteModel},
-    ClientSession,
-};
+use mongodb::{error::Error as MongoError, options::WriteModel, ClientSession};
 
 use crate::{model::BlockData, prelude::*};
 
 use super::*;
 
-impl<BR: BlockReader> Writer for MongoImpl<BR> {
-    async fn update_latest(&self, block_number: u64) -> WriterResult {
-        self.db
-            .collection::<LatestDoc>("latest")
+impl<BR: BlockReader> MongoImpl<BR> {
+    async fn update_latest_with_session(
+        &self,
+        block_number: u64,
+        sesh: Option<&mut ClientSession>,
+    ) -> Result<(), MongoError> {
+        let mut builder = self
+            .latest
             .replace_one(
                 LatestDoc::key(),
                 LatestDoc {
                     block_number: BlockNumber(block_number),
                 },
             )
-            .upsert(true)
-            .await
-            .map_err(|e| WriterError::NetworkError(e.into()))?;
+            .upsert(true);
+
+        if let Some(sesh) = sesh {
+            builder = builder.session(sesh);
+        }
+        builder.await?;
         Ok(())
     }
+}
 
-    // UPDATED: atomic ingest with mtransaction + commit bit
+impl<BR: BlockReader> Writer for MongoImpl<BR> {
+    async fn update_latest(&self, block_number: u64) -> WriterResult {
+        self.update_latest_with_session(block_number, None)
+            .await
+            .map_err(|e| WriterError::NetworkError(e.into()))
+    }
+
     async fn write_block_data(&self, data: BlockData) -> WriterResult {
         let BlockData {
             block,
@@ -113,20 +122,19 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
             let end = (start + CHUNK_SIZE).min(tx_models.len());
 
             // OWN the models for this chunk so nothing borrows `tx_models`
-            let models_chunk: Vec<_> = tx_models[start..end].to_vec();
+            let chunk: Vec<_> = tx_models[start..end].to_vec();
 
             self.with_mtransaction(
-                Arc::new(models_chunk),
-                move |session, _model, models_chunk| {
-                    Box::pin(async move {
-                        session
-                            .client()
-                            .bulk_write((*models_chunk).clone())
+                Arc::new(chunk), // line break to avoid long closure
+                move |sesh, _, chunk| {
+                    async move {
+                        sesh.client()
+                            .bulk_write((*chunk).clone())
                             .ordered(false)
-                            .session(&mut *session)
+                            .session(&mut *sesh)
                             .await
-                            .map(|_| ())
-                    })
+                    }
+                    .boxed()
                 },
             )
             .await?;
@@ -134,16 +142,18 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
 
         self.with_mtransaction(
             header_doc, // line break to avoid long closure
-            move |session, model, header_doc| {
-                Box::pin(async move {
-                    model
-                        .headers
+            |sesh, db, header_doc| {
+                async move {
+                    db.headers
                         .replace_one(header_doc.to_key(), header_doc)
                         .upsert(true)
-                        .session(&mut *session)
+                        .session(&mut *sesh)
                         .await?;
-                    Ok::<_, mongodb::error::Error>(())
-                })
+
+                    db.update_latest_with_session(block_number, Some(sesh))
+                        .await
+                }
+                .boxed()
             },
         )
         .await?;
