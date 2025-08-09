@@ -291,7 +291,7 @@ pub struct EthGetLogsQuery {
     pub topics: Vec<Topic>,
 }
 
-pub trait BlockReader {
+pub trait BlockReader: Send + Sync + 'static {
     async fn get_latest(&self) -> ReaderResult<Option<u64>>;
 
     async fn get_block_header(&self, block_number: u64) -> ReaderResult<Header>;
@@ -304,7 +304,7 @@ pub trait BlockReader {
     async fn list_blocks(&self, range: BlockRange) -> ReaderResult<Vec<u64>>;
 }
 
-pub trait Reader: BlockReader {
+pub trait Reader: BlockReader + Send + Sync + 'static {
     async fn get_tx(&self, tx_hash: TxHash) -> ReaderResult<Tx>;
     async fn get_tx_receipt(&self, tx_hash: TxHash) -> ReaderResult<TxReceipt>;
     async fn get_tx_trace(&self, tx_hash: TxHash) -> ReaderResult<TxTrace>;
@@ -315,7 +315,7 @@ pub trait Reader: BlockReader {
     async fn eth_logs(&self, query: EthGetLogsQuery) -> ReaderResult<Vec<Log>>;
 }
 
-pub trait Writer {
+pub trait Writer: Send + Sync + 'static {
     async fn update_latest(&self, block_number: u64) -> WriterResult;
 
     async fn write_block_data(&self, data: BlockData) -> WriterResult;

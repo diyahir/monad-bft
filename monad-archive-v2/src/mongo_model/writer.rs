@@ -1,4 +1,12 @@
-use crate::{model::BlockData, prelude::*};
+use std::future::IntoFuture;
+
+use futures::FutureExt;
+use mongodb::{
+    options::{BulkWriteOptions, WriteModel},
+    ClientSession,
+};
+
+use crate::{model::BlockData, mongo_model::mtransaction::with_mtransaction, prelude::*};
 
 use super::*;
 
@@ -18,35 +26,29 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
         Ok(())
     }
 
+    // UPDATED: atomic ingest with mtransaction + commit bit
     async fn write_block_data(&self, data: BlockData) -> WriterResult {
-        // Write header + tx hashes to headers collection
         let BlockData {
             block,
             receipts,
             traces,
         } = data;
+
+        // Hard length checks to prevent silent truncation
+        let tx_len = block.body.transactions.len();
+        if receipts.len() != tx_len || traces.len() != tx_len {
+            return Err(WriterError::EncodeError(eyre!(
+                "tx_count mismatch - txs={} receipts={} traces={}",
+                tx_len,
+                receipts.len(),
+                traces.len()
+            )));
+        }
+
+        // Prebuild tx docs and bulk models outside the txn window
         let block_hash = block.header.hash_slow();
         let block_number = block.header.number;
-        self.headers
-            .replace_one(
-                HeaderDoc::key(BlockNumber(block_number)),
-                HeaderDoc {
-                    block_number: BlockNumber(block_number),
-                    block_hash: block_hash.into(),
-                    tx_hashes: block
-                        .body
-                        .transactions()
-                        .map(|tx| (*tx.tx.tx_hash()).into())
-                        .collect(),
-                    header_data: block.header,
-                    evicted: false,
-                },
-            )
-            .upsert(true)
-            .await?;
-
-        // Create tx docs for each tx, rx, and trace
-        let tx_docs = block
+        let tx_docs_iter = block
             .body
             .transactions()
             .zip(receipts)
@@ -60,7 +62,6 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
                 tx_key: InlineOrRef::Inline(tx.to_bytes()),
                 rx_key: InlineOrRef::Inline(receipt.to_bytes()),
                 trace_key: InlineOrRef::Inline(trace),
-                // Create log prefixes for each log
                 log_prefixes: receipt
                     .receipt
                     .logs()
@@ -78,20 +79,80 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
                     .collect(),
             });
 
-        // Create a bulk write model for each tx doc
-        // Collect to short-circuit on error
-        let models = tx_docs
+        let tx_models: Vec<WriteModel> = tx_docs_iter
             .map(|tx| {
                 self.txs
                     .replace_one_model(TxDoc::key(tx.tx_hash), tx)
-                    .map(|mut model| {
-                        model.upsert = Some(true);
-                        model
+                    .map(|mut m| {
+                        m.upsert = Some(true);
+                        m.into()
                     })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| WriterError::EncodeError(e.into()))?;
 
-        self.client.bulk_write(models).await?;
+        // Header to write only in the final chunk's transaction
+        let header_doc = HeaderDoc {
+            block_number: BlockNumber(block_number),
+            block_hash: block_hash.into(),
+            tx_hashes: block
+                .body
+                .transactions()
+                .map(|tx| (*tx.tx.tx_hash()).into())
+                .collect(),
+            header_data: block.header,
+            tx_count: tx_len as u32,
+            storage_mode: StorageMode::Inline,
+        };
+
+        const CHUNK_SIZE: usize = 1000;
+        const MAX_RETRIES: usize = 5;
+        let total_chunks = (tx_models.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+        for i in 0..total_chunks {
+            let start = i * CHUNK_SIZE;
+            let end = (start + CHUNK_SIZE).min(tx_models.len());
+
+            // OWN the models for this chunk so nothing borrows `tx_models`
+            let models_chunk: Vec<_> = tx_models[start..end].to_vec();
+
+            with_mtransaction(
+                &self.client,
+                Arc::new(models_chunk),
+                MAX_RETRIES,
+                move |session, models_chunk| {
+                    Box::pin(async move {
+                        session
+                            .client()
+                            // TODO: avoid materializing the models_chunk and
+                            //       instead create it on-demand to avoid cloning on happy path
+                            .bulk_write((*models_chunk).clone())
+                            .ordered(false)
+                            .session(&mut *session)
+                            .await
+                            .map(|_| ())
+                    })
+                },
+            )
+            .await
+            .map_err(|e| WriterError::NetworkError(e.into()))?;
+        }
+
+        self.with_mtransaction(
+            Arc::new(header_doc), // line break to avoid long closure
+            move |session, model, header_doc| {
+                Box::pin(async move {
+                    model
+                        .headers
+                        .replace_one(header_doc.to_key(), header_doc)
+                        .upsert(true)
+                        .session(&mut *session)
+                        .await?;
+                    Ok::<_, mongodb::error::Error>(())
+                })
+            },
+        )
+        .await?;
 
         Ok(())
     }

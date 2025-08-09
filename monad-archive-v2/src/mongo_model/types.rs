@@ -8,10 +8,7 @@ use alloy_rlp::{Decodable, Encodable};
 use mongodb::bson::{self, doc, Bson};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    model::Versioned,
-    prelude::*,
-};
+use crate::{model::Versioned, prelude::*};
 
 /// Wrapper around u64 to allow for bson serialization/deserialization as i64
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -58,13 +55,21 @@ impl<'de> Deserialize<'de> for BlockNumber {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageMode {
+    Inline,
+    Ref,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HeaderDoc {
     #[serde(rename = "_id")]
     pub block_number: BlockNumber,
     pub block_hash: HexBlockHash,
     pub tx_hashes: Vec<HexTxHash>,
-    pub evicted: bool,
+    pub tx_count: u32,
+    pub storage_mode: StorageMode,
 
     // RLP encoded evm header data
     #[serde(
@@ -78,6 +83,12 @@ impl HeaderDoc {
     pub(super) fn key(block_number: BlockNumber) -> bson::Document {
         doc! {
             "_id": block_number,
+        }
+    }
+
+    pub(super) fn to_key(&self) -> bson::Document {
+        doc! {
+            "_id": self.block_number,
         }
     }
 }
@@ -197,7 +208,6 @@ impl Into<Bson> for LatestDoc {
 pub(crate) struct BlockNumberDoc {
     pub block_number: BlockNumber,
 }
-
 
 pub(super) fn serialize_header<S>(header: &Header, serializer: S) -> Result<S::Ok, S::Error>
 where

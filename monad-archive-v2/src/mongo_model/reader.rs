@@ -1,4 +1,3 @@
-
 use mongodb::{
     bson::{self, doc, Document},
     Client,
@@ -7,12 +6,13 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     model::{make_block, BlockData, BlockReader, Tx, Versioned},
+    mongo_model::{MongoImplInternal, StorageMode},
     prelude::*,
 };
 
 use super::{
-    BlockNumber, BlockNumberDoc, HeaderDoc, InlineOrRef, LatestDoc, TxDoc, TxDocBodyRxProj,
-    TxDocBodyTraceProj, MongoImpl,
+    BlockNumber, BlockNumberDoc, HeaderDoc, InlineOrRef, LatestDoc, MongoImpl, TxDoc,
+    TxDocBodyRxProj, TxDocBodyTraceProj,
 };
 
 impl<BR: BlockReader> MongoImpl<BR> {
@@ -25,12 +25,14 @@ impl<BR: BlockReader> MongoImpl<BR> {
         let txs = db.collection("txs");
 
         Ok(Self {
-            client,
-            db,
-            replica_name,
-            headers,
-            txs,
-            block_reader,
+            inner: Arc::new(MongoImplInternal {
+                client,
+                db,
+                replica_name,
+                headers,
+                txs,
+                block_reader,
+            }),
         })
     }
 
@@ -77,25 +79,38 @@ impl<BR: BlockReader> BlockReader for MongoImpl<BR> {
     }
 
     async fn get_block(&self, block_number: u64) -> ReaderResult<Block> {
-        let header = self.get_header_doc(block_number);
-        let txn_projs =
-            self.get_tx_docs::<TxDocBodyRxProj>(block_number, Some(TxDocBodyRxProj::projection()));
-
-        let (header, txn_projs) = try_join!(header, txn_projs)?;
-
-        if header.evicted {
-            todo!("Haven't implemented evicted blocks yet")
+        // Load header first and validate ingest invariants
+        let header = self.get_header_doc(block_number).await?;
+        if header.storage_mode != StorageMode::Inline {
+            // For now we only support inline path here
+            return Err(ReaderError::InvalidData(eyre!(
+                "block {} storage_mode is not inline",
+                block_number
+            )));
         }
 
-        // We can assume that the txs are not evicted because we checked the header
-        // This means they are inline
+        // Fetch tx bodies + receipts inline
+        let txn_projs = self
+            .get_tx_docs::<TxDocBodyRxProj>(block_number, Some(TxDocBodyRxProj::projection()))
+            .await?;
+
+        if txn_projs.len() as u32 != header.tx_count {
+            return Err(ReaderError::InvalidData(eyre!(
+                "block {} tx_count mismatch - header={} found={}",
+                block_number,
+                header.tx_count,
+                txn_projs.len()
+            )));
+        }
+
+        // Decode tx bodies - safe to assume inline after storage_mode check
         let transactions = txn_projs
             .iter()
             .map(|tx| {
                 let bytes = tx.tx_key.expect_inline()?;
-                Tx::from_bytes(&bytes)
+                Tx::from_bytes(&bytes).map_err(ReaderError::from)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<ReaderResult<Vec<_>>>()?;
 
         Ok(make_block(header.header_data, transactions))
     }
