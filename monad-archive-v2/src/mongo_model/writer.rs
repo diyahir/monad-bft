@@ -6,7 +6,7 @@ use mongodb::{
     ClientSession,
 };
 
-use crate::{model::BlockData, mongo_model::mtransaction::with_mtransaction, prelude::*};
+use crate::{model::BlockData, prelude::*};
 
 use super::*;
 
@@ -92,7 +92,7 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
             .map_err(|e| WriterError::EncodeError(e.into()))?;
 
         // Header to write only in the final chunk's transaction
-        let header_doc = HeaderDoc {
+        let header_doc = Arc::new(HeaderDoc {
             block_number: BlockNumber(block_number),
             block_hash: block_hash.into(),
             tx_hashes: block
@@ -103,10 +103,9 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
             header_data: block.header,
             tx_count: tx_len as u32,
             storage_mode: StorageMode::Inline,
-        };
+        });
 
         const CHUNK_SIZE: usize = 1000;
-        const MAX_RETRIES: usize = 5;
         let total_chunks = (tx_models.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
         for i in 0..total_chunks {
@@ -116,16 +115,12 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
             // OWN the models for this chunk so nothing borrows `tx_models`
             let models_chunk: Vec<_> = tx_models[start..end].to_vec();
 
-            with_mtransaction(
-                &self.client,
+            self.with_mtransaction(
                 Arc::new(models_chunk),
-                MAX_RETRIES,
-                move |session, models_chunk| {
+                move |session, _model, models_chunk| {
                     Box::pin(async move {
                         session
                             .client()
-                            // TODO: avoid materializing the models_chunk and
-                            //       instead create it on-demand to avoid cloning on happy path
                             .bulk_write((*models_chunk).clone())
                             .ordered(false)
                             .session(&mut *session)
@@ -134,12 +129,11 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
                     })
                 },
             )
-            .await
-            .map_err(|e| WriterError::NetworkError(e.into()))?;
+            .await?;
         }
 
         self.with_mtransaction(
-            Arc::new(header_doc), // line break to avoid long closure
+            header_doc, // line break to avoid long closure
             move |session, model, header_doc| {
                 Box::pin(async move {
                     model

@@ -30,6 +30,7 @@ pub struct MongoImplInternal<BR: BlockReader> {
     headers: Collection<HeaderDoc>,
     txs: Collection<TxDoc>,
     block_reader: BR,
+    max_retries: usize,
 }
 
 impl<BR: BlockReader> std::ops::Deref for MongoImpl<BR> {

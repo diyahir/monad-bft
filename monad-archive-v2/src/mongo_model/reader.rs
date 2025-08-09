@@ -16,7 +16,7 @@ use super::{
 };
 
 impl<BR: BlockReader> MongoImpl<BR> {
-    pub async fn new(uri: String, replica_name: String, block_reader: BR) -> Result<Self> {
+    pub async fn new(uri: String, replica_name: String, block_reader: BR, max_retries: usize) -> Result<Self> {
         let client = Client::with_uri_str(uri)
             .await
             .wrap_err("Failed to connect to MongoDB")?;
@@ -32,6 +32,7 @@ impl<BR: BlockReader> MongoImpl<BR> {
                 headers,
                 txs,
                 block_reader,
+                max_retries,
             }),
         })
     }
