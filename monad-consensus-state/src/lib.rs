@@ -2029,6 +2029,7 @@ mod test {
                     block_policy: block_policy(),
                     state_backend: state_backend(),
                     block_timestamp: BlockTimestamp::new(
+                        NodeId::new(keys[i as usize].pubkey()),
                         1000,
                         1,
                         TimestampAdjusterConfig::Disabled,

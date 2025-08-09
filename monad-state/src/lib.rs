@@ -807,7 +807,7 @@ where
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
-        let block_timestamp = BlockTimestamp::<SCT::NodeIdPubKey, CL>::new(
+        let block_timestamp = BlockTimestamp::<SCT::NodeIdPubKey, CL>::new(nodeid,
             5 * self.consensus_config.delta.as_nanos(),
             self.consensus_config.timestamp_latency_estimate_ns,
             self.adjuster_config,

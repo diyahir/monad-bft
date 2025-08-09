@@ -91,4 +91,4 @@ COPY --from=builder /usr/src/monad-bft/tc-gen.py .
 COPY --from=builder /usr/src/monad-bft/run_testground.sh .
 RUN chmod u+x run_testground.sh
 
-CMD ./run_testground.sh -l
+CMD ./run_testground.sh -l -d DEBUG -s 300
