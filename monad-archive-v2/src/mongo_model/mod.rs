@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use mongodb::{Client, Collection, Database};
-use thiserror::Error;
 
 use crate::{errors::NetworkError, model::BlockReader, versioned::Versioned};
 

@@ -1,8 +1,7 @@
 use alloy_primitives::{Address, TxHash};
 use alloy_rpc_types::{Log, Topic};
-use thiserror::Error;
 
-use crate::{prelude::*, versioned::VersionedError};
+use crate::prelude::*;
 
 pub type Tx = TxEnvelopeWithSender;
 pub type TxReceipt = ReceiptWithLogIndex;

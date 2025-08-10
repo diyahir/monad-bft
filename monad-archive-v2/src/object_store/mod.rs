@@ -1,7 +1,6 @@
-use thiserror::Error;
 
 use crate::{
-    errors::{BoxError, KVError},
+    errors::KVError,
     model::BlockReader,
     prelude::*,
 };
