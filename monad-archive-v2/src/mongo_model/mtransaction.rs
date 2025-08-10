@@ -4,8 +4,9 @@ use futures::future::BoxFuture;
 use mongodb::{error::Error as MongoError, ClientSession};
 
 use crate::{
-    model::{BlockReader, WriterError},
-    mongo_model::MongoImpl,
+    errors::WriterError,
+    model::BlockReader,
+    mongo_model::{error_ext::MongoErrorExt, MongoImpl},
 };
 
 impl<BR: BlockReader> MongoImpl<BR> {
@@ -88,17 +89,17 @@ impl<BR: BlockReader> MongoImpl<BR> {
             match work(&mut session, &self, Arc::clone(&res)).await {
                 Ok(val) => match session.commit_transaction().await {
                     Ok(()) => return Ok(val),
-                    Err(e) if is_retryable_error(&e) && attempt < self.max_retries => {
+                    Err(e) if e.should_quick_retry_write() && attempt < self.max_retries => {
                         attempt += 1;
                     }
-                    Err(e) => return Err(WriterError::NetworkError(e.into())),
+                    Err(e) => return Err(e.into()),
                 },
                 Err(e) => {
                     let _ = session.abort_transaction().await;
-                    if is_retryable_error(&e) && attempt < self.max_retries {
+                    if e.should_quick_retry_write() && attempt < self.max_retries {
                         attempt += 1;
                     } else {
-                        return Err(WriterError::NetworkError(e.into()));
+                        return Err(e.into());
                     }
                 }
             }
@@ -108,16 +109,4 @@ impl<BR: BlockReader> MongoImpl<BR> {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms.min(1600))).await;
         }
     }
-}
-
-/// Internal: classify retryable transaction errors via labels.
-fn is_transient_txn_error(e: &MongoError) -> bool {
-    e.contains_label(mongodb::error::TRANSIENT_TRANSACTION_ERROR)
-}
-fn is_unknown_commit_result(e: &MongoError) -> bool {
-    e.contains_label(mongodb::error::UNKNOWN_TRANSACTION_COMMIT_RESULT)
-}
-
-fn is_retryable_error(e: &MongoError) -> bool {
-    is_transient_txn_error(e) || is_unknown_commit_result(e)
 }

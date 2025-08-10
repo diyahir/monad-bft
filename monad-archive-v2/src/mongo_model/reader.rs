@@ -1,12 +1,11 @@
-use mongodb::{
-    bson::{self, doc, Document},
-    Client,
-};
+use alloy_primitives::hex::ToHexExt;
+use mongodb::bson::{self, doc, Document};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    model::{make_block, BlockData, BlockReader, Tx},
-    mongo_model::{MongoImplInternal, StorageMode},
+    errors::ROK,
+    model::{make_block, BlockData, BlockReader},
+    mongo_model::StorageMode,
     prelude::*,
     versioned::Versioned,
 };
@@ -16,42 +15,65 @@ use super::{
     TxDocBodyRxProj, TxDocBodyTraceProj,
 };
 
-impl<BR: BlockReader> MongoImpl<BR> {
-    pub async fn new(
-        uri: String,
-        replica_name: String,
-        block_reader: BR,
-        max_retries: usize,
-    ) -> Result<Self> {
-        let client = Client::with_uri_str(uri)
-            .await
-            .wrap_err("Failed to connect to MongoDB")?;
-        let db = client.database(&replica_name);
+impl<BR: ObjectStoreReader> MongoImpl<BR> {
+    fn validate_inline_storage_mode<'a>(
+        &self,
+        header: &HeaderDoc,
+        key_iter: impl ExactSizeIterator<Item = &'a InlineOrRef>,
+    ) -> ReaderResult<()> {
+        let num_docs = key_iter.len();
+        let num_refs = key_iter
+            .filter(|key| matches!(key, InlineOrRef::Ref { .. }))
+            .count();
 
-        let txs = db.collection("txs");
-        let headers = db.collection("headers");
-        // Document type is different but in same collection as headers
-        let latest = headers.clone_with_type::<LatestDoc>();
+        if num_docs != header.tx_count as usize {
+            return Err(ReaderError::InvalidData(
+                eyre::eyre!(
+                    "block {} tx_count mismatch - header={} docs={}",
+                    header.block_number.0,
+                    header.tx_count,
+                    num_docs
+                )
+                .into(),
+            ));
+        }
 
-        Ok(Self {
-            inner: Arc::new(MongoImplInternal {
-                client,
-                db,
-                replica_name,
-                headers,
-                latest,
-                txs,
-                block_reader,
-                max_retries,
-            }),
-        })
+        match header.storage_mode {
+            StorageMode::Inline => {
+                if num_refs != 0 {
+                    return Err(ReaderError::InvalidData(
+                        eyre::eyre!(
+                            "block {} header storage_mode is inline but num_refs={}",
+                            header.block_number.0,
+                            num_refs
+                        )
+                        .into(),
+                    ));
+                }
+            }
+            StorageMode::Ref => {
+                if num_refs != num_docs {
+                    return Err(ReaderError::InvalidData(
+                        eyre::eyre!(
+                            "block {} header storage_mode is ref but num_refs={} != num_docs={}",
+                            header.block_number.0,
+                            num_refs,
+                            num_docs
+                        )
+                        .into(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_header_doc(&self, block_number: u64) -> ReaderResult<HeaderDoc> {
         self.headers
             .find_one(HeaderDoc::key(BlockNumber(block_number)))
             .await?
-            .ok_or(ReaderError::BlockNotFound(block_number))
+            .ok_or_else(|| ReaderError::not_found(format!("header {}", block_number)))
     }
 
     async fn get_tx_docs<T: DeserializeOwned + Send + Sync>(
@@ -74,14 +96,17 @@ impl<BR: BlockReader> MongoImpl<BR> {
     }
 }
 
-impl<BR: BlockReader> BlockReader for MongoImpl<BR> {
-    async fn get_latest(&self) -> ReaderResult<Option<u64>> {
+impl<BR: ObjectStoreReader> BlockReader for MongoImpl<BR> {
+    async fn get_latest(&self) -> ReaderResult<u64> {
         let latest = self
             .db
             .collection::<LatestDoc>("latest")
             .find_one(LatestDoc::key())
             .await?;
-        Ok(latest.map(|doc| doc.block_number.0))
+        match latest {
+            Some(doc) => Ok(doc.block_number.0),
+            None => Err(ReaderError::not_found("latest")),
+        }
     }
 
     async fn get_block_header(&self, block_number: u64) -> ReaderResult<Header> {
@@ -90,69 +115,53 @@ impl<BR: BlockReader> BlockReader for MongoImpl<BR> {
     }
 
     async fn get_block(&self, block_number: u64) -> ReaderResult<Block> {
-        // Load header first and validate ingest invariants
-        let header = self.get_header_doc(block_number).await?;
-        if header.storage_mode != StorageMode::Inline {
-            // For now we only support inline path here
-            return Err(ReaderError::InvalidData(eyre!(
-                "block {} storage_mode is not inline",
-                block_number
-            )));
-        }
+        // Load header and validate ingest invariants
+        let (header, txn_projs) = try_join!(
+            self.get_header_doc(block_number),
+            self.get_tx_docs::<TxDocBodyRxProj>(block_number, Some(TxDocBodyRxProj::projection()))
+        )?;
 
-        // Fetch tx bodies + receipts inline
-        let txn_projs = self
-            .get_tx_docs::<TxDocBodyRxProj>(block_number, Some(TxDocBodyRxProj::projection()))
-            .await?;
+        // Validate ingest invariants
+        let key_iter = txn_projs.iter().map(|proj| &proj.tx_key);
+        self.validate_inline_storage_mode(&header, key_iter)?;
 
-        if txn_projs.len() as u32 != header.tx_count {
-            return Err(ReaderError::InvalidData(eyre!(
-                "block {} tx_count mismatch - header={} found={}",
-                block_number,
-                header.tx_count,
-                txn_projs.len()
-            )));
-        }
-
-        // Decode tx bodies - safe to assume inline after storage_mode check
-        let transactions = txn_projs
-            .iter()
-            .map(|tx| {
-                let bytes = tx.tx_key.expect_inline()?;
-                Tx::from_bytes(&bytes).map_err(ReaderError::from)
-            })
-            .collect::<ReaderResult<Vec<_>>>()?;
-
-        Ok(make_block(header.header_data, transactions))
+        Ok(match header.storage_mode {
+            StorageMode::Inline => {
+                let transactions = txn_projs
+                    .iter()
+                    .map(|proj| {
+                        let bytes = proj.tx_key.expect_inline()?;
+                        Tx::from_bytes(&bytes).map_err(ReaderError::from)
+                    })
+                    .collect::<ReaderResult<Vec<_>>>()?;
+                make_block(header.header_data, transactions)
+            }
+            StorageMode::Ref => {
+                let block = self.block_reader.get_block(block_number).await?;
+                block
+            }
+        })
     }
 
     async fn get_block_receipts(&self, block_number: u64) -> ReaderResult<BlockReceipts> {
-        let txn_projs = self
-            .get_tx_docs::<TxDocBodyRxProj>(block_number, Some(TxDocBodyRxProj::projection()))
-            .await?;
+        // Load header first and validate ingest invariants
+        let (header, txn_projs) = try_join!(
+            self.get_header_doc(block_number),
+            self.get_tx_docs::<TxDocBodyRxProj>(block_number, Some(TxDocBodyRxProj::projection()))
+        )?;
 
-        let num_refs = txn_projs
-            .iter()
-            .filter(|proj| matches!(proj.rx_key, InlineOrRef::Ref { .. }))
-            .count();
+        let key_iter = txn_projs.iter().map(|proj| &proj.rx_key);
+        self.validate_inline_storage_mode(&header, key_iter)?;
 
-        debug_assert!(
-            num_refs == txn_projs.len() || num_refs == 0,
-            "All txs must be inline or all must be refs, not a mix"
-        );
-
-        if num_refs == 0 {
-            txn_projs
+        match header.storage_mode {
+            StorageMode::Inline => txn_projs
                 .iter()
                 .map(|proj| {
                     let buf = proj.rx_key.expect_inline()?;
                     TxReceipt::from_bytes(&buf).map_err(ReaderError::from)
                 })
-                .collect()
-        } else if num_refs == txn_projs.len() {
-            self.block_reader.get_block_receipts(block_number).await
-        } else {
-            Err(eyre!("All txs must be inline or all must be refs, not a mix").into())
+                .collect(),
+            StorageMode::Ref => self.block_reader.get_block_receipts(block_number).await,
         }
     }
 
@@ -205,16 +214,23 @@ impl<BR: BlockReader> BlockReader for MongoImpl<BR> {
     }
 }
 
-impl<BR: BlockReader> Reader for MongoImpl<BR> {
+impl<BR: ObjectStoreReader> Reader for MongoImpl<BR> {
     async fn get_tx(&self, tx_hash: TxHash) -> ReaderResult<crate::model::Tx> {
         let tx_docs = self.txs.clone_with_type::<TxDocBodyRxProj>();
         let tx_doc = tx_docs
             .find_one(TxDoc::key(tx_hash.into()))
             .projection(TxDocBodyRxProj::projection())
             .await?
-            .ok_or(ReaderError::TxNotFound(tx_hash))?;
-        let bytes = tx_doc.tx_key.expect_inline()?;
-        Ok(Tx::from_bytes(&bytes)?)
+            .ok_or(ReaderError::not_found(tx_hash.encode_hex()))?;
+
+        match tx_doc.tx_key {
+            InlineOrRef::Inline(bytes) => Ok(Tx::from_bytes(&bytes)?),
+            InlineOrRef::Ref(range) => {
+                self.block_reader
+                    .get_tx_range(tx_doc.block_number.0, tx_hash, range)
+                    .await
+            }
+        }
     }
 
     async fn get_tx_receipt(&self, tx_hash: TxHash) -> ReaderResult<TxReceipt> {
@@ -223,9 +239,16 @@ impl<BR: BlockReader> Reader for MongoImpl<BR> {
             .find_one(TxDoc::key(tx_hash.into()))
             .projection(TxDocBodyRxProj::projection())
             .await?
-            .ok_or(ReaderError::TxNotFound(tx_hash))?;
-        let bytes = tx_doc.rx_key.expect_inline()?;
-        Ok(TxReceipt::from_bytes(&bytes)?)
+            .ok_or(ReaderError::not_found(tx_hash.encode_hex()))?;
+
+        match tx_doc.rx_key {
+            InlineOrRef::Inline(bytes) => Ok(TxReceipt::from_bytes(&bytes)?),
+            InlineOrRef::Ref(range) => {
+                self.block_reader
+                    .get_tx_receipt_range(tx_doc.block_number.0, range)
+                    .await
+            }
+        }
     }
 
     async fn get_tx_trace(&self, tx_hash: TxHash) -> ReaderResult<TxTrace> {
@@ -234,45 +257,59 @@ impl<BR: BlockReader> Reader for MongoImpl<BR> {
             .find_one(TxDoc::key(tx_hash.into()))
             .projection(TxDocBodyTraceProj::projection())
             .await?
-            .ok_or(ReaderError::TxNotFound(tx_hash))?;
+            .ok_or(ReaderError::not_found(tx_hash.encode_hex()))?;
+
         match tx_doc.trace_key {
             InlineOrRef::Inline(bytes) => Ok(bytes),
-            InlineOrRef::Ref { .. } => {
-                // TODO: use start and end to do a range s3 get
-                let block_number = tx_doc.block_number.0;
-                let tx_index = tx_doc.tx_index as usize;
-                let mut traces = self.block_reader.get_block_traces(block_number).await?;
-                let trace = traces
-                    .get_mut(tx_index)
-                    .ok_or(ReaderError::TxNotFound(tx_hash))?;
-                Ok(std::mem::take(trace))
+            InlineOrRef::Ref(range) => {
+                self.block_reader
+                    .get_tx_trace_range(tx_doc.block_number.0, range)
+                    .await
             }
         }
     }
 
     async fn get_tx_data(&self, tx_hash: TxHash) -> ReaderResult<TxData> {
         let Some(tx_doc) = self.txs.find_one(TxDoc::key(tx_hash.into())).await? else {
-            return Err(ReaderError::TxNotFound(tx_hash));
+            return Err(ReaderError::not_found(tx_hash.encode_hex()));
         };
 
-        // TODO: handle evicted txn bodies and rxs
-        let tx_body = tx_doc.tx_key.expect_inline()?;
-        let tx = Tx::from_bytes(&tx_body)?;
-        let rx_buf = tx_doc.rx_key.expect_inline()?;
-        let receipt = TxReceipt::from_bytes(&rx_buf)?;
+        let block_number = tx_doc.block_number.0;
 
-        let trace = match tx_doc.trace_key {
-            InlineOrRef::Inline(bytes) => bytes,
-            InlineOrRef::Ref { .. } => {
-                let block_number = tx_doc.block_number.0;
-                let tx_index = tx_doc.tx_index as usize;
-                let mut traces = self.block_reader.get_block_traces(block_number).await?;
-                let trace = traces
-                    .get_mut(tx_index)
-                    .ok_or(ReaderError::TxNotFound(tx_hash))?;
-                std::mem::take(trace)
-            }
+        let tx = async {
+            ROK(match tx_doc.tx_key {
+                InlineOrRef::Inline(bytes) => Tx::from_bytes(&bytes)?,
+                InlineOrRef::Ref(range) => {
+                    self.block_reader
+                        .get_tx_range(block_number, tx_hash, range)
+                        .await?
+                }
+            })
         };
+
+        let receipt = async {
+            ROK(match tx_doc.rx_key {
+                InlineOrRef::Inline(bytes) => TxReceipt::from_bytes(&bytes)?,
+                InlineOrRef::Ref(range) => {
+                    self.block_reader
+                        .get_tx_receipt_range(block_number, range)
+                        .await?
+                }
+            })
+        };
+
+        let trace = async {
+            ROK(match tx_doc.trace_key {
+                InlineOrRef::Inline(bytes) => bytes,
+                InlineOrRef::Ref(range) => {
+                    self.block_reader
+                        .get_tx_trace_range(block_number, range)
+                        .await?
+                }
+            })
+        };
+
+        let (tx, receipt, trace) = try_join!(tx, receipt, trace)?;
 
         Ok(TxData { tx, receipt, trace })
     }
@@ -284,9 +321,5 @@ impl<BR: BlockReader> Reader for MongoImpl<BR> {
             .projection(doc! { "_id": 1 })
             .await?
             .is_some())
-    }
-
-    async fn eth_logs(&self, _query: EthGetLogsQuery) -> ReaderResult<Vec<alloy_rpc_types::Log>> {
-        todo!("TODO: implement eth_logs")
     }
 }

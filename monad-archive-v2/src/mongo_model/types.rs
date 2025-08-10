@@ -95,7 +95,7 @@ impl HeaderDoc {
 
 #[derive(Debug)]
 pub(crate) enum InlineOrRef {
-    Ref { byte_start: u32, byte_end: u32 },
+    Ref(RangeInclusive<u32>),
     Inline(Vec<u8>),
 }
 
@@ -103,7 +103,9 @@ impl InlineOrRef {
     pub fn expect_inline(&self) -> Result<&[u8], ReaderError> {
         match self {
             InlineOrRef::Inline(bytes) => Ok(&bytes),
-            InlineOrRef::Ref { .. } => Err(ReaderError::InvalidData(eyre!("Tx is not inline"))),
+            InlineOrRef::Ref { .. } => Err(ReaderError::Other(eyre!(
+                "Tx is not inline when expected - should not happen"
+            ))),
         }
     }
 }
@@ -127,6 +129,7 @@ pub(crate) struct TxDoc {
 pub(crate) struct TxDocBodyRxProj {
     #[serde(rename = "_id")]
     pub tx_hash: HexTxHash,
+    pub block_number: BlockNumber,
 
     pub tx_key: InlineOrRef,
     pub rx_key: InlineOrRef,
@@ -136,6 +139,7 @@ impl TxDocBodyRxProj {
     pub(super) fn projection() -> bson::Document {
         doc! {
             "_id": 1,
+            "block_number": 1,
             "tx_key": 1,
             "rx_key": 1,
         }
@@ -298,12 +302,9 @@ impl Serialize for InlineOrRef {
         S: serde::Serializer,
     {
         match self {
-            InlineOrRef::Ref {
-                byte_start,
-                byte_end,
-            } => {
+            InlineOrRef::Ref(range) => {
                 // with left padding to 8 digits
-                serializer.serialize_str(&format!("{:08x}:{:08x}", byte_start, byte_end))
+                serializer.serialize_str(&format!("{:08x}:{:08x}", range.start(), range.end()))
             }
             InlineOrRef::Inline(bytes) => serializer.serialize_bytes(bytes),
         }
@@ -326,13 +327,13 @@ impl<'de> Deserialize<'de> for InlineOrRef {
                 let second: &str = iter
                     .next()
                     .ok_or_else(|| serde::de::Error::custom("Invalid object key format"))?;
-                let byte_start =
-                    u32::from_str_radix(first, 16).map_err(serde::de::Error::custom)?;
-                let byte_end = u32::from_str_radix(second, 16).map_err(serde::de::Error::custom)?;
-                Ok(InlineOrRef::Ref {
-                    byte_start,
-                    byte_end,
-                })
+
+                let parse_hex =
+                    |s: &str| u32::from_str_radix(s, 16).map_err(serde::de::Error::custom);
+
+                let byte_start = parse_hex(first)?;
+                let byte_end = parse_hex(second)?;
+                Ok(InlineOrRef::Ref(byte_start..=byte_end))
             }
             _ => Err(serde::de::Error::custom("Invalid object key format")),
         }
@@ -342,36 +343,5 @@ impl<'de> Deserialize<'de> for InlineOrRef {
 impl<T: Versioned> From<T> for InlineOrRef {
     fn from(value: T) -> Self {
         InlineOrRef::Inline(value.to_bytes())
-    }
-}
-
-impl From<mongodb::error::Error> for ReaderError {
-    fn from(e: mongodb::error::Error) -> Self {
-        use mongodb::error::ErrorKind;
-        match &*e.kind {
-            ErrorKind::InvalidTlsConfig { .. } | ErrorKind::ServerSelection { .. } => {
-                ReaderError::NetworkError(e.into())
-            }
-            ErrorKind::BsonDeserialization(..)
-            | ErrorKind::BsonSerialization(..)
-            | ErrorKind::InvalidArgument { .. }
-            | ErrorKind::InvalidResponse { .. } => ReaderError::InvalidData(e.into()),
-            _ => ReaderError::Other(e.into()),
-        }
-    }
-}
-
-impl From<mongodb::error::Error> for WriterError {
-    fn from(e: mongodb::error::Error) -> Self {
-        use mongodb::error::ErrorKind;
-        match &*e.kind {
-            ErrorKind::InvalidTlsConfig { .. } | ErrorKind::ServerSelection { .. } => {
-                WriterError::NetworkError(e.into())
-            }
-            ErrorKind::BsonDeserialization(..) | ErrorKind::BsonSerialization(..) => {
-                WriterError::EncodeError(e.into())
-            }
-            _ => WriterError::Other(e.into()),
-        }
     }
 }

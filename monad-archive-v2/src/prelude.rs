@@ -34,11 +34,12 @@ pub use tokio::time::sleep;
 pub use tracing::{debug, error, info, warn, Level};
 
 pub use crate::{
+    errors::{ReaderError, ReaderResult, WriterError, WriterResult},
     model::{
-        Block, BlockRange, BlockReceipts, BlockTraces, EthGetLogsQuery, Reader, ReaderError,
-        ReaderResult, TxData, TxReceipt, TxTrace, Writer, WriterError, WriterResult,
+        Block, BlockRange, BlockReceipts, BlockTraces, EthGetLogsQuery, Reader, Tx, TxData,
+        TxReceipt, TxTrace, Writer,
     },
-    object_store::ObjectStore,
+    object_store::{ObjectStore, ObjectStoreReader},
 };
 
 /// Spawn a rayon task and wait for it to complete.

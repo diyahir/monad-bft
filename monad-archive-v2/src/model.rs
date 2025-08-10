@@ -1,9 +1,8 @@
-use alloy_primitives::{hex::ToHexExt, Address, TxHash};
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_primitives::{Address, TxHash};
 use alloy_rpc_types::{Log, Topic};
-use mongodb::bson::{self, Bson};
+use thiserror::Error;
 
-use crate::prelude::*;
+use crate::{prelude::*, versioned::VersionedError};
 
 pub type Tx = TxEnvelopeWithSender;
 pub type TxReceipt = ReceiptWithLogIndex;
@@ -34,7 +33,7 @@ pub struct TxData {
 }
 
 pub trait BlockReader: Send + Sync + 'static {
-    async fn get_latest(&self) -> ReaderResult<Option<u64>>;
+    async fn get_latest(&self) -> ReaderResult<u64>;
 
     async fn get_block_header(&self, block_number: u64) -> ReaderResult<Header>;
     async fn get_block(&self, block_number: u64) -> ReaderResult<Block>;
@@ -53,7 +52,9 @@ pub trait Reader: BlockReader + Send + Sync + 'static {
     async fn get_tx_data(&self, tx_hash: TxHash) -> ReaderResult<TxData>;
 
     async fn tx_exists(&self, tx_hash: TxHash) -> ReaderResult<bool>;
+}
 
+pub trait EthGetLogsReader: Reader {
     async fn eth_logs(&self, query: EthGetLogsQuery) -> ReaderResult<Vec<Log>>;
 }
 
@@ -75,73 +76,4 @@ pub fn make_block(header: Header, transactions: Vec<Tx>) -> Block {
 }
 
 pub type ReaderResult<T> = Result<T, ReaderError>;
-
-pub enum ReaderError {
-    BlockNotFound(u64),
-    TxNotFound(TxHash),
-    InvalidData(eyre::Error),
-    NetworkError(eyre::Error),
-    Other(eyre::Error),
-}
-
-impl From<eyre::Error> for ReaderError {
-    fn from(error: eyre::Error) -> Self {
-        Self::Other(error)
-    }
-}
-
-impl std::fmt::Display for ReaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BlockNotFound(block_number) => write!(f, "Block not found: {}", block_number),
-            Self::TxNotFound(tx_hash) => write!(f, "Tx not found: {}", tx_hash.encode_hex()),
-            Self::InvalidData(error) => write!(f, "Invalid data: {}", error),
-            Self::NetworkError(error) => write!(f, "Network error: {}", error),
-            Self::Other(error) => write!(f, "Other error: {}", error),
-        }
-    }
-}
-
-impl std::fmt::Debug for ReaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BlockNotFound(block_number) => write!(f, "Block not found: {}", block_number),
-            Self::TxNotFound(tx_hash) => write!(f, "Tx not found: {}", tx_hash.encode_hex()),
-            Self::InvalidData(error) => write!(f, "Invalid data: {:?}", error),
-            Self::NetworkError(error) => write!(f, "Network error: {:?}", error),
-            Self::Other(error) => write!(f, "Other error: {:?}", error),
-        }
-    }
-}
-
-impl std::error::Error for ReaderError {}
-
 pub type WriterResult = Result<(), WriterError>;
-
-pub enum WriterError {
-    EncodeError(eyre::Error),
-    NetworkError(eyre::Error),
-    Other(eyre::Error),
-}
-
-impl std::fmt::Display for WriterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EncodeError(error) => write!(f, "Encode error: {}", error),
-            Self::NetworkError(error) => write!(f, "Network error: {}", error),
-            Self::Other(error) => write!(f, "Other error: {}", error),
-        }
-    }
-}
-
-impl std::fmt::Debug for WriterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EncodeError(error) => write!(f, "Encode error: {:?}", error),
-            Self::NetworkError(error) => write!(f, "Network error: {:?}", error),
-            Self::Other(error) => write!(f, "Other error: {:?}", error),
-        }
-    }
-}
-
-impl std::error::Error for WriterError {}

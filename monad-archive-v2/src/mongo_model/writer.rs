@@ -31,9 +31,7 @@ impl<BR: BlockReader> MongoImpl<BR> {
 
 impl<BR: BlockReader> Writer for MongoImpl<BR> {
     async fn update_latest(&self, block_number: u64) -> WriterResult {
-        self.update_latest_with_session(block_number, None)
-            .await
-            .map_err(|e| WriterError::NetworkError(e.into()))
+        Ok(self.update_latest_with_session(block_number, None).await?)
     }
 
     async fn write_block_data(&self, data: BlockData) -> WriterResult {
@@ -46,12 +44,11 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
         // Hard length checks to prevent silent truncation
         let tx_len = block.body.transactions.len();
         if receipts.len() != tx_len || traces.len() != tx_len {
-            return Err(WriterError::EncodeError(eyre!(
-                "tx_count mismatch - txs={} receipts={} traces={}",
-                tx_len,
-                receipts.len(),
-                traces.len()
-            )));
+            return Err(WriterError::InconsistentTxRxTraceLengths {
+                tx_len: tx_len as u32,
+                rx_len: receipts.len() as u32,
+                trace_len: traces.len() as u32,
+            });
         }
 
         // Prebuild tx docs and bulk models outside the txn window
@@ -97,8 +94,7 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
                         m.into()
                     })
             })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| WriterError::EncodeError(e.into()))?;
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Header to write only in the final chunk's transaction
         let header_doc = Arc::new(HeaderDoc {
@@ -125,7 +121,7 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
             let chunk: Vec<_> = tx_models[start..end].to_vec();
 
             self.with_mtransaction(
-                Arc::new(chunk), // line break to avoid long closure
+                Arc::new(chunk), // fmt: line break
                 move |sesh, _, chunk| {
                     async move {
                         sesh.client()
@@ -141,7 +137,7 @@ impl<BR: BlockReader> Writer for MongoImpl<BR> {
         }
 
         self.with_mtransaction(
-            header_doc, // line break to avoid long closure
+            header_doc, // fmt: line break
             |sesh, db, header_doc| {
                 async move {
                     db.headers
