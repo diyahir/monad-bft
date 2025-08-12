@@ -47,8 +47,11 @@ pub struct Cli {
     #[arg(long)]
     pub bft_block_path: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 60)]
     pub bft_block_poll_freq_secs: u64,
+
+    #[arg(long, default_value_t = 10)]
+    pub bft_block_min_age_secs: u64,
 
     /// Path to forkpoint for checkpoint'ing
     /// If set, archiver will save a copy of this file every forkpoint_checkpoint_freq_secs
