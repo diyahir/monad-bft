@@ -33,7 +33,7 @@ pub const MONAD_TESTNET2_CHAIN_ID: u64 = 30143;
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
     fn get_chain_revision(&self, round: Round) -> CR;
-    fn activate_staking(&self, epoch: Epoch) -> bool;
+    fn get_staking_activation_epoch(&self) -> Epoch;
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
 }
 
@@ -108,8 +108,8 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.chain_id
     }
 
-    fn activate_staking(&self, epoch: Epoch) -> bool {
-        epoch >= self.staking_activation
+    fn get_staking_activation_epoch(&self) -> Epoch {
+        self.staking_activation
     }
 
     #[allow(clippy::if_same_then_else)]
@@ -201,8 +201,8 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
         20143
     }
 
-    fn activate_staking(&self, _: Epoch) -> bool {
-        true
+    fn get_staking_activation_epoch(&self) -> Epoch {
+        Epoch(1)
     }
 
     fn get_chain_revision(&self, _round: Round) -> MockChainRevision {

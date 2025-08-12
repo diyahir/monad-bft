@@ -465,9 +465,9 @@ monad_read_valset(triedb *db, size_t const block_num, bool get_next)
     }
     auto const valset = get_next ? contract.vars._valset_consensus()
                                  : contract.vars._valset_snapshot();
-    auto get_valinfo = [&](u64_be const id) {
-        return get_next ? contract.vars._val_consensus(id)
-                        : contract.vars._val_snapshot(id);
+    auto get_stake = [&](u64_be const id) {
+        return get_next ? contract.vars._consensus_stake(id)
+                        : contract.vars._snapshot_stake(id);
     };
 
     uint64_t const length = valset.length();
@@ -475,9 +475,8 @@ monad_read_valset(triedb *db, size_t const block_num, bool get_next)
 
     for (uint64_t i = 0; i < length; i += 1) {
         auto const val_id = valset.get(i).load();
-        auto const val = get_valinfo(val_id);
-        auto const keys = val.keys().load();
-        auto const stake = val.stake().load();
+        auto const stake = get_stake(val_id).load();
+        auto const keys = contract.vars.val_execution(val_id).keys().load();
         std::memcpy(output.valset[i].secp_pubkey, keys.secp_pubkey.data(), 33);
         std::memcpy(output.valset[i].bls_pubkey, keys.bls_pubkey.data(), 48);
         std::memcpy(output.valset[i].stake, stake.bytes, 32);

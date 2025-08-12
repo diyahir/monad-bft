@@ -35,7 +35,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
-use monad_types::ExecutionProtocol;
+use monad_types::{Epoch, ExecutionProtocol};
 use monad_validator::signature_collection::SignatureCollection;
 
 pub trait MockableTxPool:
@@ -250,7 +250,7 @@ where
                             beneficiary,
                             timestamp_ns,
                             epoch,
-                            false,
+                            Epoch::MAX,
                             round_signature.clone(),
                             extending_blocks,
                             block_policy,

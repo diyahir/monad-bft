@@ -157,6 +157,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
+    pub system_txns: Vec<Recovered<TxEnvelope>>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
     pub txn_fees: BTreeMap<Address, Balance>,
@@ -711,11 +712,12 @@ where
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
-        let tx_signers = block
+        let mut tx_signers = block
             .validated_txns
             .iter()
             .map(|txn| txn.signer())
             .collect_vec();
+        tx_signers.extend(block.system_txns.iter().map(|txn| txn.signer()));
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
             block.get_seq_num(),
@@ -730,6 +732,25 @@ where
             Some(&extending_blocks),
             tx_signers.iter(),
         )?;
+
+        for sys_txn in block.system_txns.iter() {
+            let eth_address = sys_txn.signer();
+            let txn_nonce = sys_txn.nonce();
+
+            let expected_nonce = account_nonces
+                .get_mut(&eth_address)
+                .expect("account_nonces should have been populated");
+
+            if &txn_nonce != expected_nonce {
+                warn!(
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().block_round,
+                    "block not coherent, invalid nonce"
+                );
+                return Err(BlockPolicyError::BlockNotCoherent);
+            }
+            *expected_nonce += 1;
+        }
 
         for txn in block.validated_txns.iter() {
             let eth_address = txn.signer();

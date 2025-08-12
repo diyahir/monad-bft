@@ -248,7 +248,7 @@ fn run_custom_iter<const N: usize>(
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
                         Epoch(1),
-                        false,
+                        Epoch::MAX,
                         RoundSignature::new(Round(0), &mock_keypair),
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,

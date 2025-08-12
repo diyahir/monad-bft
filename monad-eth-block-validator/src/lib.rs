@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, marker::PhantomData};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
+};
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS,
@@ -21,7 +24,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction},
     TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{hex, Address, U256};
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
@@ -43,8 +46,12 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace_span, warn};
 
+const SYSTEM_TRANSACTIONS_ETH_ADDRESS: Address =
+    Address::new(hex!("0x6f49a8F621353f12378d0046E7d7e4b9B249DC9e"));
+
 type NonceMap = BTreeMap<Address, Nonce>;
 type TxnFeeMap = BTreeMap<Address, U256>;
+type SystemTransactions = Vec<Recovered<TxEnvelope>>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -82,7 +89,8 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         max_code_size: usize,
-    ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError>
+    {
         let EthBlockBody {
             transactions,
             ommers,
@@ -104,7 +112,7 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let eth_txns: Vec<Recovered<TxEnvelope>> = transactions
+        let mut eth_txns: VecDeque<Recovered<TxEnvelope>> = transactions
             .into_par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
@@ -114,9 +122,26 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
+        let mut sys_txns = Vec::new();
+        while eth_txns
+            .front()
+            .is_some_and(|txn| txn.signer() == SYSTEM_TRANSACTIONS_ETH_ADDRESS)
+        {
+            sys_txns.push(eth_txns.pop_front().unwrap());
+        }
+
         // recover the account nonces and txn fee usage in this block
         let mut nonces = BTreeMap::new();
         let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
+
+        for sys_txn in &sys_txns {
+            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
+            if let Some(old_nonce) = maybe_old_nonce {
+                if sys_txn.nonce() != old_nonce + 1 {
+                    return Err(BlockValidationError::TxnError);
+                }
+            }
+        }
 
         for eth_txn in &eth_txns {
             if static_validate_transaction(
@@ -168,7 +193,7 @@ where
             return Err(BlockValidationError::TxnError);
         }
 
-        Ok((eth_txns, nonces, txn_fees))
+        Ok((sys_txns, eth_txns.into(), nonces, txn_fees))
     }
 
     fn validate_block_header(
@@ -290,7 +315,7 @@ where
     >{
         self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((validated_txns, nonces, txn_fees)) = self.validate_block_body(
+        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = self.validate_block_body(
             &body,
             tx_limit,
             proposal_gas_limit,
@@ -300,6 +325,7 @@ where
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
                 block,
+                system_txns,
                 validated_txns,
                 nonces,
                 txn_fees,

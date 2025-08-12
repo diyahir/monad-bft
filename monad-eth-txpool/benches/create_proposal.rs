@@ -55,7 +55,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     + block_policy.get_last_commit().0 as u128
                     + pending_blocks.len() as u128,
                 Epoch(1),
-                false,
+                Epoch::MAX,
                 RoundSignature::new(Round(0), &mock_keypair),
                 pending_blocks.to_owned(),
                 block_policy,

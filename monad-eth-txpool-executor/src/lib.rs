@@ -283,7 +283,7 @@ where
                         beneficiary,
                         timestamp_ns,
                         epoch,
-                        self.chain_config.activate_staking(epoch),
+                        self.chain_config.get_staking_activation_epoch(),
                         round_signature.clone(),
                         extending_blocks,
                         &self.block_policy,
