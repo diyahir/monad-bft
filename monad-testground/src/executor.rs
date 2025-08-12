@@ -212,7 +212,10 @@ where
         locked_epoch_validators,
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
-        adjuster_config: TimestampAdjusterConfig::Disabled,
+        adjuster_config: TimestampAdjusterConfig::Enabled {
+            max_delta_ns: 10_000_000_000,
+            adjustment_period: 101,
+        },
         _phantom: PhantomData,
     }
     .build()

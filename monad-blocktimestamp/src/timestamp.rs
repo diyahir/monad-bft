@@ -14,7 +14,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Epoch, NodeId, PingSequence, Round};
 use sorted_vec::SortedVec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{messages::message::PingResponseMessage, timestamp_adjuster::TimestampAdjuster};
 
@@ -370,7 +370,7 @@ pub struct BlockTimestamp<P: PubKey, T: Clock> {
 
     default_latency_estimate_ns: u128,
     create_proposal_time_ns: RunningMedian<u128>,
-    adjuster: Option<TimestampAdjuster>,
+    adjuster: Option<TimestampAdjuster<P>>,
 
     avg_wait_for_qc_self: BTreeMap<NodeId<P>, WaitState>,
     avg_wait_for_qc: BTreeMap<NodeId<P>, u128>,
@@ -400,9 +400,11 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
                     max_delta_ns,
                     adjustment_period,
                 } => Some(TimestampAdjuster::new(
+                    node_id,
                     max_delta_ns,
                     adjustment_period,
-                    Some(10_000_000_000),
+                    None,
+                    //Some(10_000_000_000),
                 )),
             },
             avg_wait_for_qc_self: Default::default(),
@@ -516,7 +518,7 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         let proposal_round = proposal.round;
         let proposal_node_id = proposal.node_id;
         let adjusted_now = self.get_adjusted_time().as_nanos();
-        debug!(
+        info!(
             ?self.node_id,
             ?vote.node_id,
             ?wait_for_qc,

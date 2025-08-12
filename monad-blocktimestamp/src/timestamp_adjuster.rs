@@ -3,12 +3,15 @@ use std::ops::Neg;
 use monad_consensus_types::quorum_certificate::{
     TimestampAdjustment, TimestampAdjustmentDirection,
 };
+use monad_crypto::certificate_signature::PubKey;
 use rand::Rng;
 use sorted_vec::SortedVec;
+use monad_types::NodeId;
 use tracing::{debug, info};
 
 #[derive(Debug)]
-pub struct TimestampAdjuster {
+pub struct TimestampAdjuster<P: PubKey> {
+    node_id: NodeId<P>,
     /// track adjustments to make to the local time
     adjustment: i64,
     /// number of timestamp_adjustment commands before updating adjustment
@@ -19,8 +22,8 @@ pub struct TimestampAdjuster {
     max_delta_ns: u128,
 }
 
-impl TimestampAdjuster {
-    pub fn new(max_delta_ns: u128, adjustment_period: usize, max_drift: Option<i64>) -> Self {
+impl<P: PubKey> TimestampAdjuster<P> {
+    pub fn new(node_id: NodeId<P>, max_delta_ns: u128, adjustment_period: usize, max_drift: Option<i64>) -> Self {
         assert!(max_delta_ns < i128::MAX as u128);
         assert!(
             adjustment_period % 2 == 1,
@@ -33,6 +36,7 @@ impl TimestampAdjuster {
             debug!(?init_adjustment, "Set initial clock adjustment");
         }
         Self {
+            node_id,
             adjustment: init_adjustment,
             adjustment_period,
             deltas: SortedVec::new(),
@@ -48,6 +52,7 @@ impl TimestampAdjuster {
             let adjustment = self.deltas[i];
 
             info!(
+                ?self.node_id,
                 median_idx = i,
                 median_delta = self.deltas[i],
                 old_adjustment = self.adjustment,

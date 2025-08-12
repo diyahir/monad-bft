@@ -360,7 +360,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         },
         adjuster_config: TimestampAdjusterConfig::Enabled {
             max_delta_ns: 10_000_000_000,
-            adjustment_period: 201,
+            adjustment_period: 101,
         },
         _phantom: PhantomData,
     };
