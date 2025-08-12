@@ -17,11 +17,10 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
+use alloy_rlp::Encodable;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -30,6 +29,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
+use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, info, trace, warn};
 use tx_heap::TrackedTxHeapDrainAction;
 
@@ -65,7 +65,7 @@ pub struct TrackedTxMap<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
     soft_tx_expiry: Duration,
@@ -82,7 +82,7 @@ impl<ST, SCT, SBT> TrackedTxMap<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
@@ -148,11 +148,12 @@ where
         proposal_byte_limit: u64,
         block_policy: &EthBlockPolicy<ST, SCT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
+        system_transactions: Vec<Recovered<TxEnvelope>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         let Some(last_commit) = &self.last_commit else {
-            return Ok(Vec::new());
+            return Ok(system_transactions);
         };
         let last_commit_seq_num = last_commit.seq_num;
 
@@ -168,7 +169,7 @@ where
                 "last commit update does not match block policy last commit"
             );
 
-            return Ok(Vec::new());
+            return Ok(system_transactions);
         }
 
         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
@@ -187,7 +188,7 @@ where
         }
 
         if self.txs.is_empty() || tx_limit == 0 {
-            return Ok(Vec::new());
+            return Ok(system_transactions);
         }
 
         let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
@@ -230,6 +231,7 @@ where
             proposal_byte_limit,
             tx_heap,
             account_balances,
+            system_transactions,
         );
 
         let proposal_num_txs = proposal_tx_list.len();
@@ -367,12 +369,13 @@ where
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&Address, Balance>,
+        system_transactions: Vec<Recovered<TxEnvelope>>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
 
-        let mut txs = Vec::new();
+        let mut txs = system_transactions;
         let mut total_gas = 0u64;
-        let mut total_size = 0u64;
+        let mut total_size: u64 = txs.iter().map(|tx| tx.length() as u64).sum();
 
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas

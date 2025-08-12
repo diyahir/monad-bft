@@ -29,7 +29,6 @@ use monad_consensus_types::{
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     tip::ConsensusTip,
 };
 use monad_crypto::certificate_signature::{
@@ -37,14 +36,17 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_set::ValidatorSetTypeFactory,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use tracing::{debug_span, info};
 
@@ -59,7 +61,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
@@ -93,7 +95,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -262,10 +264,15 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
-        consensus_cmds
+        consensus.update_role();
+        let filtered_cmds = consensus_cmds
+            .into_iter()
+            .filter(|cmd| consensus.filter_cmd(cmd))
+            .collect_vec(); // FIXME remove collect_vec
+        filtered_cmds
             .into_iter()
             .map(|cmd| self.wrap(cmd))
-            .collect::<Vec<_>>()
+            .collect_vec()
     }
 
     fn try_build_state_wrapper<'b>(
@@ -532,7 +539,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     upcoming_leader_rounds: Vec<Round>,
     pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT>,
@@ -555,7 +562,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-    SBT: StateBackend,
+    SBT: StateBackend<ST, SCT>,
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT>) -> Self {
         let WrappedConsensusCommand {
@@ -641,19 +648,15 @@ where
                 )));
 
                 match commit {
-                    OptimisticPolicyCommit::Proposed(block) => {
-                        let block_id = block.get_id();
-                        let round = block.get_block_round();
-                        let seq_num = block.get_seq_num();
-                    }
+                    OptimisticPolicyCommit::Proposed(_) => {}
                     OptimisticPolicyCommit::Finalized(block) => {
                         let finalized_seq_num = block.get_seq_num();
                         parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::BlockCommit(vec![
                             block,
                         ])));
-                        parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::NotifyFinalized(finalized_seq_num),
-                        ));
+                        parent_cmds.push(Command::ValSetCommand(ValSetCommand::NotifyFinalized(
+                            finalized_seq_num,
+                        )));
                     }
                 }
             }

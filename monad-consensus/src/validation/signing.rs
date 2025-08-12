@@ -19,11 +19,9 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     no_endorsement::{FreshProposalCertificate, NoEndorsementCertificate},
     quorum_certificate::QuorumCertificate,
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighExtend, HighExtendVote, NoTipCertificate, TimeoutCertificate, TimeoutInfo},
     tip::ConsensusTip,
     validation::Error,
-    voting::ValidatorMapping,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -36,6 +34,8 @@ use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND}
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_mapping::ValidatorMapping,
     validator_set::{ValidatorSetError, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -1035,6 +1035,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::U256;
     use monad_bls::{BlsSignature, BlsSignatureCollection};
     use monad_consensus_types::{
         block::{
@@ -1043,11 +1044,10 @@ mod test {
         },
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
-        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{HighExtend, HighTipRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
         tip::ConsensusTip,
         validation::Error,
-        voting::{ValidatorMapping, Vote},
+        voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -1067,6 +1067,8 @@ mod test {
     };
     use monad_validator::{
         epoch_manager::EpochManager,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        validator_mapping::ValidatorMapping,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
         weighted_round_robin::WeightedRoundRobin,
@@ -1175,7 +1177,7 @@ mod test {
 
         let keypair = get_key::<SignatureType>(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
-        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(1))];
+        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(U256::ONE))];
         let voting_identity = vec![(NodeId::new(keypair.pubkey()), cert_keypair.pubkey())];
 
         let vset = ValidatorSetFactory::default().create(stake_list).unwrap();
@@ -1213,8 +1215,8 @@ mod test {
 
         let keypairs = create_keys::<SignatureType>(2);
         let vlist = vec![
-            (NodeId::new(keypairs[0].pubkey()), Stake(1)),
-            (NodeId::new(keypairs[1].pubkey()), Stake(2)),
+            (NodeId::new(keypairs[0].pubkey()), Stake(U256::ONE)),
+            (NodeId::new(keypairs[1].pubkey()), Stake(U256::from(2))),
         ];
 
         let vset = ValidatorSetFactory::default().create(vlist).unwrap();
@@ -1344,7 +1346,7 @@ mod test {
 
         let keypair = get_key::<SignatureType>(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
-        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(1))];
+        let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(U256::ONE))];
         let voting_identity = vec![(NodeId::new(keypair.pubkey()), cert_keypair.pubkey())];
 
         let vset = ValidatorSetFactory::default().create(stake_list).unwrap();

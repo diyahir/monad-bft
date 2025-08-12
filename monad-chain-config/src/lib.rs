@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use execution_revision::MonadExecutionRevision;
-use monad_types::Round;
+use monad_types::{Epoch, Round};
 use revision::{ChainParams, ChainRevision, MockChainRevision, MonadChainRevision};
 use serde::Deserialize;
 use thiserror::Error;
@@ -33,6 +33,7 @@ pub const MONAD_TESTNET2_CHAIN_ID: u64 = 30143;
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
     fn get_chain_revision(&self, round: Round) -> CR;
+    fn activate_staking(&self, epoch: Epoch) -> bool;
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
 }
 
@@ -43,6 +44,8 @@ pub struct MonadChainConfig {
     pub v_0_7_0_activation: Round,
     pub v_0_8_0_activation: Round,
     pub v_0_10_0_activation: Round,
+
+    pub staking_activation: Epoch,
 
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
@@ -105,6 +108,10 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.chain_id
     }
 
+    fn activate_staking(&self, epoch: Epoch) -> bool {
+        epoch >= self.staking_activation
+    }
+
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
         if round >= self.v_0_10_0_activation {
@@ -135,6 +142,8 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
 
+    staking_activation: Epoch(2),
+
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
 };
@@ -144,6 +153,8 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round(3263000),
     v_0_10_0_activation: Round(3263000), // TODO fill in real round later
+
+    staking_activation: Epoch::MAX,
 
     execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
     execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
@@ -155,6 +166,8 @@ const MONAD_TESTNET2_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(6487752), // 2025-07-29T13:30:00.000Z
 
+    staking_activation: Epoch::MAX,
+
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
 };
@@ -165,6 +178,8 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN, // TODO fill in real round later
+
+    staking_activation: Epoch::MAX,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
@@ -184,6 +199,10 @@ impl MockChainConfig {
 impl ChainConfig<MockChainRevision> for MockChainConfig {
     fn chain_id(&self) -> u64 {
         20143
+    }
+
+    fn activate_staking(&self, _: Epoch) -> bool {
+        true
     }
 
     fn get_chain_revision(&self, _round: Round) -> MockChainRevision {

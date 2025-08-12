@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_primitives::U256;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
@@ -137,7 +138,10 @@ fn service(
 
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
-                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(1))).collect(),
+                    validator_set: all_peers
+                        .iter()
+                        .map(|peer| (*peer, Stake(U256::ZERO)))
+                        .collect(),
                 }]);
 
                 loop {
