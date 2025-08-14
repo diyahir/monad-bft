@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    chainstate::{get_block_key_from_tag, Archive, ChainState},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
         UnformattedData,
@@ -47,8 +47,8 @@ pub struct DebugBlockParams {
 #[rpc(method = "debug_getRawBlock")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
-pub async fn monad_debug_getRawBlock<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_debug_getRawBlock<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawBlock: {params:?}");
@@ -82,8 +82,8 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 #[rpc(method = "debug_getRawHeader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded header.
-pub async fn monad_debug_getRawHeader<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_debug_getRawHeader<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawHeader: {params:?}");
@@ -112,8 +112,8 @@ pub struct MonadDebugGetRawReceiptsResult {
 #[rpc(method = "debug_getRawReceipts")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded receipts.
-pub async fn monad_debug_getRawReceipts<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_debug_getRawReceipts<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     trace!("monad_debug_getRawReceipts: {params:?}");
@@ -144,8 +144,8 @@ pub struct MonadDebugGetRawTransactionParams {
 #[rpc(method = "debug_getRawTransaction")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded transactions.
-pub async fn monad_debug_getRawTransaction<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_debug_getRawTransaction<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawTransaction: {params:?}");

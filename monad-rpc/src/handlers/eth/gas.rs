@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    chainstate::{get_block_key_from_tag, Archive, ChainState},
     eth_json_types::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
     handlers::eth::call::{fill_gas_params, CallRequest},
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -364,7 +364,9 @@ pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
 #[rpc(method = "eth_gasPrice")]
 #[allow(non_snake_case)]
 /// Returns the current price per gas in wei.
-pub async fn monad_eth_gasPrice<T: Triedb>(chain_state: &ChainState<T>) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_gasPrice<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
+) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
     let header = chain_state
@@ -403,8 +405,8 @@ pub struct MonadEthHistoryParams {
 #[allow(non_snake_case)]
 /// Transaction fee history
 /// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
-pub async fn monad_eth_feeHistory<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_feeHistory<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthHistoryParams,
 ) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");

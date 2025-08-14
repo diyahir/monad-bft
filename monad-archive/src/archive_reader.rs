@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::BlockHash;
+use std::{borrow::Borrow, future::Future, pin::Pin};
+
+use alloy_primitives::{Address, BlockHash};
+use alloy_rpc_types::Topic;
 use eyre::Result;
 use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tracing::trace;
@@ -22,7 +25,7 @@ use crate::{
     cli::AwsCliArgs,
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
     kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
-    model::logs_index::LogsIndexArchiver,
+    model::logs_index::{LogsIndexArchiver, LogsIndexReader},
     prelude::*,
 };
 
@@ -37,6 +40,30 @@ pub struct ArchiveReader {
     block_data_executor: Arc<FallbackExecutor<BlockDataReaderErased, BlockDataReaderErased>>,
     index_executor: Arc<FallbackExecutor<IndexReaderImpl, IndexReaderImpl>>,
     pub log_index: Option<LogsIndexArchiver>,
+}
+
+impl LogsIndexReader for ArchiveReader {
+    type Strm<'a> = <LogsIndexArchiver as LogsIndexReader>::Strm<'a>;
+    type Fut<'a> = Pin<Box<dyn Future<Output = Result<Self::Strm<'a>>> + Send + 'a>>;
+
+    fn query_logs<'a, A, I>(
+        &'a self,
+        from: u64,
+        to: u64,
+        addresses: I,
+        topics: &'a [Topic],
+    ) -> Self::Fut<'a>
+    where
+        I: IntoIterator<Item = A> + Send + 'a,
+        A: Borrow<Address> + Send + 'a,
+    {
+        Box::pin(async move {
+            let Some(inner) = &self.log_index else {
+                return Err(eyre::eyre!("Logs index reader is not available"));
+            };
+            inner.query_logs(from, to, addresses, topics).await
+        })
+    }
 }
 
 impl ArchiveReader {

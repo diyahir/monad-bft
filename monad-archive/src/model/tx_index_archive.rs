@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::ops::Deref;
+use std::{future::Future, ops::Deref};
 
 use alloy_primitives::{hex::ToHexExt, TxHash};
 use eyre::bail;
@@ -44,7 +44,7 @@ impl Deref for TxIndexArchiver {
 
 pub trait IndexReader {
     async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData>;
-    async fn get_latest_indexed(&self) -> Result<Option<u64>>;
+    fn get_latest_indexed(&self) -> impl Future<Output = Result<Option<u64>>> + Send;
     async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData>;
     async fn get_tx_indexed_data_bulk(
         &self,

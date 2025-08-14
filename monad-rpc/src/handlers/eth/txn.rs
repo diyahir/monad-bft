@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    chainstate::{ChainState, ChainStateError},
+    chainstate::{Archive, ChainState, ChainStateError},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
         Quantity, UnformattedData,
@@ -154,8 +154,8 @@ fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn monad_eth_getLogs<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getLogs<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     max_block_range: u64,
     p: MonadEthGetLogsParams,
     use_eth_get_logs_index: bool,
@@ -298,8 +298,8 @@ pub struct MonadEthGetTransactionReceiptParams {
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getTransactionReceipt<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetTransactionReceiptParams,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {params:?}");
@@ -320,8 +320,8 @@ pub struct MonadEthGetTransactionByHashParams {
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn monad_eth_getTransactionByHash<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getTransactionByHash<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetTransactionByHashParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
@@ -343,8 +343,8 @@ pub struct MonadEthGetTransactionByBlockHashAndIndexParams {
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a transaction by block hash and transaction index position.
-pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetTransactionByBlockHashAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
@@ -372,8 +372,8 @@ pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a transaction by block number and transaction index position.
-pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetTransactionByBlockNumberAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");

@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState, ChainStateError},
+    chainstate::{get_block_key_from_tag, Archive, ChainState, ChainStateError},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
     },
@@ -52,8 +52,8 @@ pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns the number of most recent block.
-pub async fn monad_eth_blockNumber<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_blockNumber<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
 ) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_blockNumber");
 
@@ -87,8 +87,8 @@ pub struct MonadEthGetBlock {
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a block by hash.
-pub async fn monad_eth_getBlockByHash<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getBlockByHash<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetBlockByHashParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
@@ -117,8 +117,8 @@ pub struct MonadEthGetBlockByNumberParams {
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns information about a block by number.
-pub async fn monad_eth_getBlockByNumber<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getBlockByNumber<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetBlockByNumberParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
@@ -146,8 +146,8 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns the number of transactions in a block from a block matching the given block hash.
-pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetBlockTransactionCountByHashParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
@@ -170,8 +170,8 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns the number of transactions in a block matching the given block number.
-pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetBlockTransactionCountByNumberParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
@@ -257,8 +257,8 @@ pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns the receipts of a block by number or hash.
-pub async fn monad_eth_getBlockReceipts<T: Triedb>(
-    chain_state: &ChainState<T>,
+pub async fn monad_eth_getBlockReceipts<T: Triedb, A: Archive>(
+    chain_state: &ChainState<T, A>,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");

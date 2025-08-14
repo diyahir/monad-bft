@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{borrow::Borrow, future::Future, pin::Pin};
+
 use alloy_primitives::{hex::ToHexExt, Address, FixedBytes, Log};
 use alloy_rpc_types::Topic;
 use futures::{FutureExt, Stream};
@@ -36,6 +38,27 @@ pub struct LogsIndexArchiver {
     index_reader: IndexReaderImpl,
     collection: Collection<KeyValueDocument>,
     concurrency: usize,
+}
+
+pub trait LogsIndexReader {
+    type Strm<'a>: Stream<Item = Result<TxIndexedData>> + Send + 'a
+    where
+        Self: 'a;
+
+    type Fut<'a>: Future<Output = Result<Self::Strm<'a>>> + Send + 'a
+    where
+        Self: 'a;
+
+    fn query_logs<'a, A, I>(
+        &'a self,
+        from: u64,
+        to: u64,
+        addresses: I,
+        topics: &'a [Topic],
+    ) -> Self::Fut<'a>
+    where
+        I: IntoIterator<Item = A> + Send + 'a,
+        A: Borrow<Address> + Send + 'a;
 }
 
 impl LogsIndexArchiver {
@@ -138,74 +161,85 @@ impl LogsIndexArchiver {
             .await
             .wrap_err("Failed to insert logs after retries")
     }
+}
+
+impl LogsIndexReader for LogsIndexArchiver {
+    type Strm<'a> = Pin<Box<dyn Stream<Item = Result<TxIndexedData>> + Send + 'a>>;
+    type Fut<'a> = Pin<Box<dyn Future<Output = Result<Self::Strm<'a>>> + Send + 'a>>;
 
     /// Query the logs index for a given range of blocks and filter criteria
     /// Note: query_logs returns a superset of the txs containing matching logs
     /// This means another pass of filtering must be done by client
-    pub async fn query_logs<'a>(
+    fn query_logs<'a, A, I>(
         &'a self,
         from: u64,
         to: u64,
-        addresses: impl IntoIterator<Item = &Address> + 'a + Send,
+        addresses: I,
         topics: &'a [Topic],
-    ) -> Result<impl Stream<Item = Result<TxIndexedData>> + 'a + Send> {
-        let mut query = doc! {
-            "block_number": { "$gte": from as i64, "$lte": to as i64 },
-        };
+    ) -> Self::Fut<'a>
+    where
+        I: IntoIterator<Item = A> + Send + 'a,
+        A: Borrow<Address> + Send + 'a,
+    {
+        Box::pin(async move {
+            let mut query = doc! {
+                "block_number": { "$gte": from as i64, "$lte": to as i64 },
+            };
 
-        let address_prefixes = addresses
-            .into_iter()
-            .map(|a| fb_to_bson(a))
-            .collect::<Vec<_>>();
-        let num_addresses = address_prefixes.len();
-        if !address_prefixes.is_empty() {
-            query.insert("logs.address", doc! { "$in": address_prefixes });
-        }
-
-        let convert_topic = |t: &Topic| t.iter().map(fb_to_bson).collect::<Vec<_>>();
-        for (i, topic) in topics.iter().enumerate() {
-            if topic.is_empty() {
-                continue;
+            let address_prefixes = addresses
+                .into_iter()
+                .map(|a| fb_to_bson(a.borrow()))
+                .collect::<Vec<_>>();
+            let num_addresses = address_prefixes.len();
+            if !address_prefixes.is_empty() {
+                query.insert("logs.address", doc! { "$in": address_prefixes });
             }
-            query.insert(
-                format!("logs.topic_{}", i),
-                doc! { "$in": convert_topic(topic) },
-            );
-        }
 
-        // Not efficient, but prefer for better debug logging.
-        // Can be removed after this code has been battle tested
-        let err_msg = format!("Failed to query logs: {query:?}");
-        debug!(
-            "Querying logs from {from} to {to}, with {num_addresses} addresses and {} topics",
-            topics.len()
-        );
-        debug!("Logs mongo query: {query:?}");
-
-        // Query for the kv document
-        let cursor = self
-            .collection
-            .find(query)
-            // do not return index fields, only kv
-            .projection(doc! { "_id": true, "value": true })
-            .await
-            .wrap_err_with(|| err_msg)?;
-
-        // Decode kv document and potentially resolve references to produce a TxIndexData
-        Ok(cursor
-            .then(|doc| {
-                let reader = self.index_reader.clone();
-                let collection = self.collection.clone();
-                async move {
-                    let doc = doc?;
-                    let (_id, bytes) = doc.resolve(&collection).await?;
-                    reader
-                        .resolve_from_bytes(&bytes)
-                        .await
-                        .wrap_err("Failed to decode TxIndexedData when querying logs")
+            let convert_topic = |t: &Topic| t.iter().map(fb_to_bson).collect::<Vec<_>>();
+            for (i, topic) in topics.iter().enumerate() {
+                if topic.is_empty() {
+                    continue;
                 }
-            })
-            .boxed())
+                query.insert(
+                    format!("logs.topic_{}", i),
+                    doc! { "$in": convert_topic(topic) },
+                );
+            }
+
+            // Not efficient, but prefer for better debug logging.
+            // Can be removed after this code has been battle tested
+            let err_msg = format!("Failed to query logs: {query:?}");
+            debug!(
+                "Querying logs from {from} to {to}, with {num_addresses} addresses and {} topics",
+                topics.len()
+            );
+            debug!("Logs mongo query: {query:?}");
+
+            // Query for the kv document
+            let cursor = self
+                .collection
+                .find(query)
+                // do not return index fields, only kv
+                .projection(doc! { "_id": true, "value": true })
+                .await
+                .wrap_err_with(|| err_msg)?;
+
+            // Decode kv document and potentially resolve references to produce a TxIndexData
+            Ok(cursor
+                .then(|doc| {
+                    let reader = self.index_reader.clone();
+                    let collection = self.collection.clone();
+                    async move {
+                        let doc = doc?;
+                        let (_id, bytes) = doc.resolve(&collection).await?;
+                        reader
+                            .resolve_from_bytes(&bytes)
+                            .await
+                            .wrap_err("Failed to decode TxIndexedData when querying logs")
+                    }
+                })
+                .boxed())
+        })
     }
 }
 

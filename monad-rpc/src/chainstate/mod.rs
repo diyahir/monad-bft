@@ -28,8 +28,8 @@ use alloy_rpc_types::{
 use futures::{stream, StreamExt, TryStreamExt};
 use itertools::{Either, Itertools};
 use monad_archive::{
-    model::BlockDataReader,
-    prelude::{ArchiveReader, Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
+    model::{logs_index::LogsIndexReader, BlockDataReader},
+    prelude::{Context, ContextCompat, IndexReader, TxEnvelopeWithSender},
 };
 use monad_triedb_utils::triedb_env::{
     BlockHeader, BlockKey, FinalizedBlockKey, TransactionLocation, Triedb,
@@ -50,10 +50,10 @@ use crate::{
 pub mod buffer;
 
 #[derive(Clone)]
-pub struct ChainState<T> {
+pub struct ChainState<T, A> {
     buffer: Option<Arc<ChainStateBuffer>>,
     triedb_env: T,
-    archive_reader: Option<ArchiveReader>,
+    archive_reader: Option<A>,
 }
 
 #[derive(Debug)]
@@ -71,11 +71,17 @@ pub fn get_block_key_from_tag<T: Triedb>(triedb_env: &T, tag: BlockTags) -> Bloc
     }
 }
 
-impl<T: Triedb> ChainState<T> {
+pub trait Archive: BlockDataReader + IndexReader + LogsIndexReader + Send + Sync + 'static {}
+impl<T> Archive for T where
+    T: BlockDataReader + IndexReader + LogsIndexReader + Send + Sync + 'static
+{
+}
+
+impl<T: Triedb, A: Archive> ChainState<T, A> {
     pub fn new(
         buffer: Option<Arc<ChainStateBuffer>>,
         triedb_env: T,
-        archive_reader: Option<ArchiveReader>,
+        archive_reader: Option<A>,
     ) -> Self {
         ChainState {
             buffer,
@@ -810,8 +816,8 @@ impl<T: Triedb> ChainState<T> {
     }
 }
 
-async fn check_dry_run_get_logs_index(
-    archive_reader: ArchiveReader,
+async fn check_dry_run_get_logs_index<A: IndexReader + LogsIndexReader>(
+    archive_reader: A,
     from_block: u64,
     to_block: u64,
     filter: Filter,
@@ -857,17 +863,12 @@ async fn check_dry_run_get_logs_index(
     Ok(())
 }
 
-async fn get_logs_with_index(
-    reader: &ArchiveReader,
+async fn get_logs_with_index<A: IndexReader + LogsIndexReader>(
+    reader: &A,
     from_block: u64,
     to_block: u64,
     filter: &Filter,
 ) -> monad_archive::prelude::Result<Vec<Log>> {
-    let log_index = reader
-        .log_index
-        .as_ref()
-        .wrap_err("Log index reader not present")?;
-
     let latest_indexed_tx = reader
         .get_latest_indexed()
         .await?
@@ -885,7 +886,7 @@ async fn get_logs_with_index(
 
     // Note: we an limit returned (and queried!) data by using `query_logs_index_streamed`
     // and take_while we're under the response size limit
-    let potential_matches = log_index
+    let potential_matches = reader
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
         .await?;
     let potential_matches = potential_matches.try_collect::<Vec<_>>().await?;
