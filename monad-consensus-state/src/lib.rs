@@ -753,6 +753,7 @@ where
             self.metrics.consensus_events.created_qc += 1;
 
             cmds.extend(self.process_qc(&qc));
+            // Note that this try_propose is superfluous because process_qc calls it internally
             cmds.extend(self.try_propose());
 
             let vote_round_leader = self
@@ -863,6 +864,8 @@ where
                 cmd,
             )
         }));
+        // Note that this try_propose is necessary because process_remote_timeout may internally
+        // construct a TC
         cmds.extend(self.try_propose());
 
         cmds
@@ -1231,6 +1234,8 @@ where
             .no_endorsement_state
             .start_new_round(self.consensus.pacemaker.get_current_round());
 
+        cmds.extend(self.try_propose());
+
         cmds
     }
 
@@ -1240,24 +1245,34 @@ where
         &mut self,
         tc: &TimeoutCertificate<ST, SCT, EPT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        self.consensus
-            .pacemaker
-            .process_certificate(
-                self.metrics,
-                self.epoch_manager,
-                &mut self.consensus.safety,
-                RoundCertificate::Tc(tc.clone()),
-            )
-            .into_iter()
-            .flat_map(|cmd| {
-                ConsensusCommand::from_pacemaker_command(
-                    self.keypair,
-                    self.cert_keypair,
-                    self.version,
-                    cmd,
+        if tc.round < self.consensus.pacemaker.get_current_round() {
+            self.metrics.consensus_events.process_old_tc += 1;
+            return Vec::new();
+        }
+        self.metrics.consensus_events.process_tc += 1;
+
+        let mut cmds = Vec::new();
+        cmds.extend(
+            self.consensus
+                .pacemaker
+                .process_certificate(
+                    self.metrics,
+                    self.epoch_manager,
+                    &mut self.consensus.safety,
+                    RoundCertificate::Tc(tc.clone()),
                 )
-            })
-            .collect()
+                .into_iter()
+                .flat_map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        self.keypair,
+                        self.cert_keypair,
+                        self.version,
+                        cmd,
+                    )
+                }),
+        );
+        cmds.extend(self.try_propose());
+        cmds
     }
 
     #[must_use]

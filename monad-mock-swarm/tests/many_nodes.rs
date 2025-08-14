@@ -27,7 +27,9 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_transformer::{DropTransformer, GenericTransformer, LatencyTransformer, ID};
+use monad_transformer::{
+    DropTransformer, GenericTransformer, LatencyTransformer, RandLatencyTransformer, ID,
+};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
@@ -158,7 +160,13 @@ fn many_nodes_noser_one_offline() {
                             .collect(),
                     ),
                     vec![
-                        GenericTransformer::Latency(LatencyTransformer::new(delta)),
+                        GenericTransformer::Latency(LatencyTransformer::new(
+                            Duration::from_millis(1),
+                        )),
+                        GenericTransformer::RandLatency(RandLatencyTransformer::new(
+                            0,
+                            delta - Duration::from_millis(1),
+                        )),
                         GenericTransformer::Drop(
                             DropTransformer::new().drop_only_from(*all_peers.first().unwrap()),
                         ),

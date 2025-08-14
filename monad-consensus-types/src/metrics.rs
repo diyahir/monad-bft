@@ -111,6 +111,8 @@ metrics!(
             created_tc,
             process_old_qc,
             process_qc,
+            process_old_tc,
+            process_tc,
             // TODO(andr-dev, PR): Add metric to differentiate emitting
             // TxPoolCommand::CreateProposal vs consensus state creating + broadcasting finalized
             // proposal
