@@ -105,6 +105,7 @@ fn nodes_with_random_latency_cron() {
 #[test_case(4712443726697299681; "seed14")]
 #[test_case(5153471631950140680; "seed15")]
 #[test_case(4180491672667595808; "seed16")]
+#[test_case(3250401801427586510; "seed17")]
 fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
     use std::time::Duration;
 
@@ -186,6 +187,11 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
         // blocks in its ledger.
         // the last_block is committed by processing 2 QCs after it. there
         // should be no branching
+        .metric_exact(
+            &node_ids,
+            fetch_metric!(consensus_events.local_timeout),
+            1, // nodes time out on init
+        )
         .metric_range(
             &node_ids,
             fetch_metric!(consensus_events.process_qc),
