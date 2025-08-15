@@ -5,7 +5,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
-    clock::{TestClock, TimestampAdjusterConfig},
+    clock::{TestClock, SystemClock, TimestampAdjusterConfig},
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
@@ -148,7 +148,7 @@ type MonadStateType<ST, SCT> = MonadState<
     MockValidator,
     MockChainConfig,
     MockChainRevision,
-    TestClock,
+    SystemClock,
 >;
 
 pub struct StateConfig<ST, SCT>
