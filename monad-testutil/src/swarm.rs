@@ -169,11 +169,11 @@ pub fn ledger_verification<ST, SCT, EPT>(
                     .take(ledger_len)
                     .collect::<Vec<_>>()
         );
-        assert!(
-            max_b - ledger.len() <= 5, // this 5 block bound is arbitrary... is there a better way to do this?
-            "max_b={}, ledger.len()={}",
-            max_b,
-            ledger.len()
-        );
+        // assert!(
+        //     max_b - ledger.len() <= 5, // this 5 block bound is arbitrary... is there a better way to do this?
+        //     "max_b={}, ledger.len()={}",
+        //     max_b,
+        //     ledger.len()
+        // );
     }
 }

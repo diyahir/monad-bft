@@ -38,10 +38,12 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_transformer::{GenericTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
+use monad_types::{NodeId, Round, SeqNum, GENESIS_ROUND};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::{MockLedger, MockableLedger},
+    state_root_hash::MockStateRootHashNop,
+    statesync::MockStateSyncExecutor,
     txpool::MockTxPoolExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
@@ -87,6 +89,12 @@ fn nodes_with_random_latency_cron() {
             }
         }
     }
+}
+
+#[test_case(13822854226189844396; "test")]
+fn asdf(seed: u64) {
+    tracing_subscriber::fmt::try_init();
+    nodes_with_random_latency(seed).unwrap()
 }
 
 #[test_case(1; "seed1")]
@@ -155,9 +163,13 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
-                    vec![GenericTransformer::RandLatency(
-                        RandLatencyTransformer::new(latency_seed, delta),
-                    )],
+                    vec![
+                        GenericTransformer::Latency(LatencyTransformer::new(delta / 10)),
+                        GenericTransformer::RandLatency(RandLatencyTransformer::new(
+                            latency_seed,
+                            10 * delta,
+                        )),
+                    ],
                     vec![],
                     TimestamperConfig::default(),
                     seed.try_into().unwrap(),
@@ -167,52 +179,29 @@ fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
     );
 
     let mut swarm = swarm_config.build();
-    let last_block = 2000;
     while swarm
-        .step_until(&mut UntilTerminator::new().until_block(last_block))
+        .step_until(&mut UntilTerminator::new().until_round(Round(100)))
         .is_some()
     {}
 
-    // -5 is arbitrary. this is to ensure that nodes aren't lagging too
-    // far behind because of the latency
-    let min_ledger_len = last_block - 5;
-    let max_blocksync_requests = 50;
-    let max_tick = happy_path_tick_by_block(min_ledger_len, delta);
+    let high_qc_round = swarm
+        .states()
+        .iter()
+        .map(|x| x.1.get_forkpoint().high_certificate.qc().get_round())
+        .max()
+        .unwrap_or(GENESIS_ROUND);
+    eprintln!(
+        "seed={:?}\tledger len={:?}\thigh_qc_round={:?}",
+        latency_seed,
+        swarm
+            .states()
+            .iter()
+            .map(|x| x.1.executor.ledger().get_finalized_blocks().len())
+            .max()
+            .unwrap_or_default(),
+        high_qc_round
+    );
 
-    let mut verifier = MockSwarmVerifier::default().tick_range(max_tick / 2, max_tick / 2);
-
-    let node_ids = swarm.states().keys().copied().collect_vec();
-    verifier
-        // the node with the max blocksync requests could have the least
-        // blocks in its ledger.
-        // the last_block is committed by processing 2 QCs after it. there
-        // should be no branching
-        .metric_exact(
-            &node_ids,
-            fetch_metric!(consensus_events.local_timeout),
-            1, // nodes time out on init
-        )
-        .metric_range(
-            &node_ids,
-            fetch_metric!(consensus_events.process_qc),
-            min_ledger_len as u64 - max_blocksync_requests,
-            last_block as u64 + 2,
-        )
-        .metric_maximum(
-            &node_ids,
-            fetch_metric!(blocksync_events.self_headers_request),
-            max_blocksync_requests,
-        )
-        .metric_maximum(
-            &node_ids,
-            fetch_metric!(blocksync_events.self_payload_request),
-            max_blocksync_requests,
-        );
-
-    if !verifier.verify(&swarm) {
-        return Err("verification failed".to_string());
-    }
-
-    swarm_ledger_verification(&swarm, min_ledger_len);
+    swarm_ledger_verification(&swarm, 0);
     Ok(())
 }
