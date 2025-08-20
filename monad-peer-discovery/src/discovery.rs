@@ -641,12 +641,14 @@ where
         }
         debug!(?to, ?target, ?lookup_id, "sending peer lookup request");
 
-        self.outstanding_lookup_requests
-            .insert(lookup_id, LookupInfo {
+        self.outstanding_lookup_requests.insert(
+            lookup_id,
+            LookupInfo {
                 num_retries: 0,
                 receiver: to,
                 open_discovery,
-            });
+            },
+        );
         let peer_lookup_request = PeerLookupRequest {
             lookup_id,
             target,
@@ -819,12 +821,14 @@ where
         {
             new_lookup_id = self.rng.next_u32();
         }
-        self.outstanding_lookup_requests
-            .insert(new_lookup_id, LookupInfo {
+        self.outstanding_lookup_requests.insert(
+            new_lookup_id,
+            LookupInfo {
                 num_retries,
                 receiver: to,
                 open_discovery,
-            });
+            },
+        );
 
         let peer_lookup_request = PeerLookupRequest {
             lookup_id: new_lookup_id,
@@ -1304,10 +1308,13 @@ mod tests {
         assert_eq!(cmds.len(), 0);
 
         // when corresponding pong is received from peer1, last_ping and last_seen is updated
-        state.handle_pong(peer1_pubkey, Pong {
-            ping_id: ping_msg.id,
-            local_record_seq: 0,
-        });
+        state.handle_pong(
+            peer1_pubkey,
+            Pong {
+                ping_id: ping_msg.id,
+                local_record_seq: 0,
+            },
+        );
         let connection_info = state.connection_info.get(&peer1_pubkey);
         assert!(connection_info.is_some());
         assert!(connection_info.unwrap().last_ping.is_none());
@@ -1326,17 +1333,23 @@ mod tests {
             id: 12345,
             local_name_record: Some(generate_name_record(peer1, 0)),
         };
-        state.connection_info.insert(peer1_pubkey, ConnectionInfo {
-            last_ping: Some(last_ping),
-            unresponsive_pings: 3,
-            last_participation: Round(1),
-        });
+        state.connection_info.insert(
+            peer1_pubkey,
+            ConnectionInfo {
+                last_ping: Some(last_ping),
+                unresponsive_pings: 3,
+                last_participation: Round(1),
+            },
+        );
 
         // should not record pong when ping_id doesn't match
-        state.handle_pong(peer1_pubkey, Pong {
-            ping_id: 54321, // incorrect ping id,
-            local_record_seq: 0,
-        });
+        state.handle_pong(
+            peer1_pubkey,
+            Pong {
+                ping_id: 54321, // incorrect ping id,
+                local_record_seq: 0,
+            },
+        );
         let connection_info = state.connection_info.get(&peer1_pubkey);
         assert!(connection_info.is_some());
         assert_eq!(connection_info.unwrap().last_ping, Some(last_ping));
@@ -1387,11 +1400,14 @@ mod tests {
         );
 
         let record = generate_name_record(peer2, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: requests[0].lookup_id,
-            target: peer2_pubkey,
-            name_records: vec![record],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: requests[0].lookup_id,
+                target: peer2_pubkey,
+                name_records: vec![record],
+            },
+        );
 
         // peer2 should be added to routing info and outstanding requests should be cleared
         assert!(state.routing_info.contains_key(&peer2_pubkey));
@@ -1417,11 +1433,14 @@ mod tests {
             .insert(Epoch(1), BTreeSet::from([peer1_pubkey, peer2_pubkey]));
 
         // receive a peer lookup request for peer3, which is not in routing_info
-        let cmds = state.handle_peer_lookup_request(peer1_pubkey, PeerLookupRequest {
-            lookup_id: 1,
-            target: peer3_pubkey,
-            open_discovery: true,
-        });
+        let cmds = state.handle_peer_lookup_request(
+            peer1_pubkey,
+            PeerLookupRequest {
+                lookup_id: 1,
+                target: peer3_pubkey,
+                open_discovery: true,
+            },
+        );
         assert_eq!(cmds.len(), 1);
 
         // should return peer1 and peer2 instead
@@ -1447,33 +1466,45 @@ mod tests {
         let peer1_pubkey = NodeId::new(peer1.pubkey());
 
         let mut state = generate_test_state(peer0, vec![peer1]);
-        state.outstanding_lookup_requests.insert(1, LookupInfo {
-            num_retries: 0,
-            receiver: peer1_pubkey,
-            open_discovery: false,
-        });
-        state.outstanding_lookup_requests.insert(2, LookupInfo {
-            num_retries: 0,
-            receiver: peer1_pubkey,
-            open_discovery: false,
-        });
+        state.outstanding_lookup_requests.insert(
+            1,
+            LookupInfo {
+                num_retries: 0,
+                receiver: peer1_pubkey,
+                open_discovery: false,
+            },
+        );
+        state.outstanding_lookup_requests.insert(
+            2,
+            LookupInfo {
+                num_retries: 0,
+                receiver: peer1_pubkey,
+                open_discovery: false,
+            },
+        );
 
         // should update name record if record has higher sequence number (seq num incremented to 2)
         let record = generate_name_record(peer1, 2);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 1,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: 1,
+                target: peer1_pubkey,
+                name_records: vec![record],
+            },
+        );
         assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 2);
 
         // should not update name record if record has lower sequence number (seq num decremented to 1)
         let record = generate_name_record(peer1, 1);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 2,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: 2,
+                target: peer1_pubkey,
+                name_records: vec![record],
+            },
+        );
         assert_eq!(state.routing_info.get(&peer1_pubkey).unwrap().seq(), 2);
     }
 
@@ -1488,11 +1519,14 @@ mod tests {
 
         // should not record peer lookup response if not in outstanding requests
         let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id: 1,
-            target: peer1_pubkey,
-            name_records: vec![record],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id: 1,
+                target: peer1_pubkey,
+                name_records: vec![record],
+            },
+        );
         assert!(!state.routing_info.contains_key(&peer1_pubkey));
     }
 
@@ -1505,21 +1539,25 @@ mod tests {
 
         let lookup_id = 1;
         let mut state = generate_test_state(peer0, vec![]);
-        state
-            .outstanding_lookup_requests
-            .insert(lookup_id, LookupInfo {
+        state.outstanding_lookup_requests.insert(
+            lookup_id,
+            LookupInfo {
                 num_retries: 0,
                 receiver: peer1_pubkey,
                 open_discovery: false,
-            });
+            },
+        );
 
         // should not record peer lookup response if number of records exceed max
         let record = generate_name_record(peer1, 0);
-        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
-            lookup_id,
-            target: peer1_pubkey,
-            name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
-        });
+        state.handle_peer_lookup_response(
+            peer1_pubkey,
+            PeerLookupResponse {
+                lookup_id,
+                target: peer1_pubkey,
+                name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
+            },
+        );
         assert!(!state.routing_info.contains_key(&peer1_pubkey));
     }
 
@@ -1535,20 +1573,24 @@ mod tests {
         // add peer1 to routing info with unresponsive pings
         // and outstanding lookup request with num_retries above prune threshold
         let lookup_id = 1;
-        let connection_info = BTreeMap::from([(peer1_pubkey, ConnectionInfo {
-            last_ping: None,
-            unresponsive_pings: 5,
-            last_participation: Round(1),
-        })]);
+        let connection_info = BTreeMap::from([(
+            peer1_pubkey,
+            ConnectionInfo {
+                last_ping: None,
+                unresponsive_pings: 5,
+                last_participation: Round(1),
+            },
+        )]);
         state.unresponsive_prune_threshold = 3;
         state.connection_info = connection_info;
-        state
-            .outstanding_lookup_requests
-            .insert(lookup_id, LookupInfo {
+        state.outstanding_lookup_requests.insert(
+            lookup_id,
+            LookupInfo {
                 num_retries: 5,
                 receiver: peer1_pubkey,
                 open_discovery: false,
-            });
+            },
+        );
 
         state.refresh();
         assert!(state.routing_info.is_empty());
@@ -1572,11 +1614,14 @@ mod tests {
                 .epoch_validators
                 .insert(Epoch(1), BTreeSet::from([peer1_pubkey]));
         }
-        state.connection_info.insert(peer1_pubkey, ConnectionInfo {
-            last_ping: None,
-            unresponsive_pings: 0,
-            last_participation: Round(1),
-        });
+        state.connection_info.insert(
+            peer1_pubkey,
+            ConnectionInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                last_participation: Round(1),
+            },
+        );
 
         state.refresh();
         assert!(state.routing_info.contains_key(&peer1_pubkey));
@@ -1678,10 +1723,13 @@ mod tests {
         state.pinned_full_nodes.insert(peer3_pubkey);
 
         // peer2 is a validator, it is added to routing info although already exceeding max number of peers
-        let cmds = state.handle_ping(peer2_pubkey, Ping {
-            id: 2,
-            local_name_record: Some(generate_name_record(peer2, 0)),
-        });
+        let cmds = state.handle_ping(
+            peer2_pubkey,
+            Ping {
+                id: 2,
+                local_name_record: Some(generate_name_record(peer2, 0)),
+            },
+        );
         assert!(state.routing_info.contains_key(&peer2_pubkey));
         assert_eq!(state.routing_info.len(), 2);
         // both full node and validator should add peer2 to connection info and send ping
@@ -1691,10 +1739,13 @@ mod tests {
         assert_eq!(cmds[0].0, peer2_pubkey);
 
         // peer3 is a pinned full node, it is also added to the routing info
-        let cmds = state.handle_ping(peer3_pubkey, Ping {
-            id: 3,
-            local_name_record: Some(generate_name_record(peer3, 0)),
-        });
+        let cmds = state.handle_ping(
+            peer3_pubkey,
+            Ping {
+                id: 3,
+                local_name_record: Some(generate_name_record(peer3, 0)),
+            },
+        );
         assert!(state.routing_info.contains_key(&peer3_pubkey));
         assert_eq!(state.routing_info.len(), 3);
         match role {
@@ -1713,10 +1764,13 @@ mod tests {
         }
 
         // peer4 is a full node, it is not added to the routing info
-        let cmds = state.handle_ping(peer4_pubkey, Ping {
-            id: 4,
-            local_name_record: Some(generate_name_record(peer4, 0)),
-        });
+        let cmds = state.handle_ping(
+            peer4_pubkey,
+            Ping {
+                id: 4,
+                local_name_record: Some(generate_name_record(peer4, 0)),
+            },
+        );
         assert!(!state.routing_info.contains_key(&peer4_pubkey));
         assert_eq!(state.routing_info.len(), 3);
         // peer4 should not be added to connection info and should not send ping
@@ -1832,10 +1886,13 @@ mod tests {
         state.self_role = Role::Validator;
         state.routing_info = routing_info;
 
-        let cmds = state.handle_ping(peer1_pubkey, Ping {
-            id: 7,
-            local_name_record: Some(MonadNameRecord::new(incoming_record, peer1)),
-        });
+        let cmds = state.handle_ping(
+            peer1_pubkey,
+            Ping {
+                id: 7,
+                local_name_record: Some(MonadNameRecord::new(incoming_record, peer1)),
+            },
+        );
 
         if expected_pong {
             if expected_ping_to_sender {
@@ -1846,10 +1903,13 @@ mod tests {
                 assert_eq!(cmds.len(), 1);
             }
             let pong = extract_pong(cmds)[0];
-            assert_eq!(pong, Pong {
-                ping_id: 7,
-                local_record_seq: 0
-            });
+            assert_eq!(
+                pong,
+                Pong {
+                    ping_id: 7,
+                    local_record_seq: 0
+                }
+            );
 
             let node1_record = state.routing_info.get(&peer1_pubkey).unwrap().name_record;
             assert_eq!(expected_record, node1_record);

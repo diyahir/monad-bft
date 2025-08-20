@@ -448,6 +448,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     network_name = node_state.node_config.network_name,
                     node_name = node_state.node_config.node_name
                 ),
+                node_state.node_config.network_name.clone(),  
                 record_metrics_interval,
             )
             .expect("failed to build otel monad-node");
@@ -463,13 +464,6 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     let maybe_otel_meter = maybe_otel_meter_provider
         .as_ref()
         .map(|provider| provider.meter("opentelemetry"));
-
-    let service_name = format!(
-        "{network_name}_{node_name}",
-        network_name = node_state.node_config.network_name,
-        node_name = node_state.node_config.node_name
-    );
-    let network_name = node_state.node_config.network_name.clone();
 
     let mut gauge_cache = HashMap::new();
     let mut process_start = Instant::now();
@@ -497,7 +491,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
                 let state_metrics = state.metrics();
                 let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed,);
+                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -832,11 +826,10 @@ fn send_metrics(
     process_start: &Instant,
     total_state_update_elapsed: &Duration,
 ) {
-
     let node_info_gauge = gauge_cache
         .entry(GAUGE_NODE_INFO)
         .or_insert_with(|| meter.u64_gauge(GAUGE_NODE_INFO).build());
-    
+
     node_info_gauge.record(1, &[]);
 
     for (k, v) in state_metrics
