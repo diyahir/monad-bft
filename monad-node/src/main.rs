@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     process,
@@ -31,7 +31,6 @@ use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics,
-    signature_collection::SignatureCollection,
     validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::{ipc::ControlPanelIpcReceiver, TracingReload};
@@ -53,7 +52,7 @@ use monad_node_config::{
     PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
-    discovery::{PeerDiscovery, PeerDiscoveryBuilder},
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerDiscoveryRole},
     MonadNameRecord, NameRecord,
 };
 use monad_pprof::start_pprof_server;
@@ -72,10 +71,11 @@ use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
     parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
+    triedb_val_set::ValSetUpdater,
 };
 use monad_validator::{
-    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
@@ -228,31 +228,24 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         .qc()
         .get_round()
         + Round(1);
-    let router: BoxUpdater<_, _> = {
-        let raptor_router = build_raptorcast_router::<
-            SignatureType,
-            SignatureCollectionType,
-            MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-            VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
-        >(
-            node_state.node_config.clone(),
-            node_state.node_config.peer_discovery,
-            node_state.router_identity,
-            node_state.node_config.bootstrap.clone(),
-            &node_state.node_config.fullnode_dedicated.identities,
-            locked_epoch_validators.clone(),
-            current_epoch,
-            current_round,
-        )
-        .await;
+    let router = build_raptorcast_router::<
+        SignatureType,
+        SignatureCollectionType,
+        MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+    >(
+        node_state.node_config.clone(),
+        node_state.node_config.peer_discovery,
+        node_state.router_identity,
+        node_state.node_config.bootstrap.clone(),
+        &node_state.node_config.fullnode_dedicated.identities,
+        locked_epoch_validators.clone(),
+        current_epoch,
+        current_round,
+    );
 
-        #[cfg(feature = "full-node")]
-        let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
-
-        <_ as Updater<_>>::boxed(raptor_router)
-    };
-
-    let val_set_update_interval = SeqNum(50_000); // TODO configurable
+    let epoch_length = SeqNum(50_000); // TODO configurable
+    let epoch_start_delay = Round(5_000); // TODO configurable
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
@@ -317,10 +310,10 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
-        state_root_hash: StateRootHashTriedbPoll::new(
+        val_set: ValSetUpdater::new(
             &node_state.triedb_path,
             &node_state.validators_path,
-            val_set_update_interval,
+            epoch_length,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
@@ -408,8 +401,8 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         state_backend,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        val_set_update_interval,
-        epoch_start_delay: Round(5000),
+        epoch_length,
+        epoch_start_delay,
         beneficiary: node_state.node_config.beneficiary.into(),
         locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
@@ -448,7 +441,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     network_name = node_state.node_config.network_name,
                     node_name = node_state.node_config.node_name
                 ),
-                node_state.node_config.network_name.clone(),  
+                node_state.node_config.network_name.clone(),
                 record_metrics_interval,
             )
             .expect("failed to build otel monad-node");
@@ -533,7 +526,10 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     });
                     let _ledger_span = ledger_span.enter();
                     let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
-                    state.update(event.event)
+                    let start = Instant::now();
+                    let cmds = state.update(event.event);
+                    total_state_update_elapsed += start.elapsed();
+                    cmds
                 };
 
                 if !commands.is_empty() {
@@ -548,9 +544,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
                     });
                     let _ledger_span = ledger_span.enter();
                     let _exec_span = tracing::trace_span!("exec_span", num_commands).entered();
-                    let start = Instant::now();
                     executor.exec(commands);
-                    total_state_update_elapsed += start.elapsed();
                 }
 
                 if let Some(ledger_tip) = executor.ledger.last_commit() {
@@ -566,7 +560,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
     Ok(())
 }
 
-async fn build_raptorcast_router<ST, SCT, M, OM>(
+fn build_raptorcast_router<ST, SCT, M, OM>(
     node_config: NodeConfig<ST>,
     peer_discovery_config: PeerDiscoveryConfig<ST>,
     identity: ST::KeyPairType,
@@ -604,12 +598,7 @@ where
     tracing::debug!(
         ?bind_address,
         ?name_record_address,
-        "Monad-node ({}) starting, pid: {}",
-        if cfg!(feature = "full-node") {
-            "full-node"
-        } else {
-            "validator"
-        },
+        "Monad-node starting, pid: {}",
         process::id()
     );
 
@@ -641,7 +630,7 @@ where
     );
 
     // initial set of peers
-    let routing_info = bootstrap_nodes
+    let bootstrap_peers = bootstrap_nodes
         .peers
         .iter()
         .filter_map(|peer| {
@@ -683,25 +672,33 @@ where
         })
         .collect();
 
-    let epoch_validators = locked_epoch_validators
-        .iter()
-        .map(|epoch_validators| {
-            (
-                epoch_validators.epoch,
-                epoch_validators
-                    .validators
-                    .0
-                    .iter()
-                    .map(|validator| validator.node_id)
-                    .collect(),
-            )
-        })
-        .collect();
+    let epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>> =
+        locked_epoch_validators
+            .iter()
+            .map(|epoch_validators| {
+                (
+                    epoch_validators.epoch,
+                    epoch_validators
+                        .validators
+                        .0
+                        .iter()
+                        .map(|validator| validator.node_id)
+                        .collect(),
+                )
+            })
+            .collect();
     let mut pinned_full_nodes: BTreeSet<_> = full_nodes
         .iter()
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
         .collect();
 
+    let mut self_peer_disc_role = match epoch_validators
+        .get(&current_epoch)
+        .and_then(|validators| validators.get(&self_id))
+    {
+        Some(_) => PeerDiscoveryRole::ValidatorNone,
+        None => PeerDiscoveryRole::FullNodeNone,
+    };
     let secondary_instance: RaptorCastConfigSecondary<ST> = {
         if let Some(cfg_2nd) = node_config.fullnode_raptorcast {
             match cfg_2nd.mode {
@@ -712,6 +709,7 @@ where
 
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Client => {
                     debug!("Configured with Secondary RaptorCast instance: Client");
+                    self_peer_disc_role = PeerDiscoveryRole::FullNodeClient;
                     RaptorCastConfigSecondary {
                         raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
                         mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
@@ -726,6 +724,7 @@ where
 
                 monad_node_config::fullnode_raptorcast::SecondaryRaptorCastModeConfig::Publisher => {
                     debug!("Configured with Secondary RaptorCast instance: Publisher");
+                    self_peer_disc_role = PeerDiscoveryRole::ValidatorPublisher;
                     let full_nodes_prioritized: Vec<NodeId<CertificateSignaturePubKey<ST>>> = cfg_2nd
                         .full_nodes_prioritized
                         .identities
@@ -758,12 +757,13 @@ where
 
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id,
+        self_role: self_peer_disc_role,
         self_record,
         current_round,
         current_epoch,
         epoch_validators,
         pinned_full_nodes,
-        routing_info,
+        bootstrap_peers,
         ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
@@ -829,7 +829,6 @@ fn send_metrics(
     let node_info_gauge = gauge_cache
         .entry(GAUGE_NODE_INFO)
         .or_insert_with(|| meter.u64_gauge(GAUGE_NODE_INFO).build());
-
     node_info_gauge.record(1, &[]);
 
     for (k, v) in state_metrics
