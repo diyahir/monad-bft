@@ -20,7 +20,7 @@ use std::{
 
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_consensus_types::block::{AccountBalanceState, BlockPolicyBlockValidator};
 use monad_crypto::certificate_signature::{
@@ -285,8 +285,7 @@ impl<'a> ProposalSequencer<'a> {
                 *authority_nonce_deltas.entry(authority).or_default() += 1;
 
                 if let Some(account_balance) = account_balances.get_mut(&authority) {
-                    // TODO(andr-dev): Set auhtority to delegated if being used for sequencing.
-                    // account_balance.is_delegated = true;
+                    account_balance.is_delegated = true;
                 }
             }
         }

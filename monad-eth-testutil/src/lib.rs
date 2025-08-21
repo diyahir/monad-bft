@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, iter::repeat_n};
+use std::{
+    collections::{BTreeMap, HashMap},
+    iter::repeat_n,
+};
 
 use alloy_consensus::{
     transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
@@ -224,22 +227,6 @@ pub fn generate_consensus_test_block(
         RoundSignature::new(Round(1), &keypair),
     );
 
-    let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(
-        BTreeMap::default(),
-        |mut map, (address, nonce)| {
-            match map.entry(address) {
-                std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert(nonce);
-                }
-                std::collections::btree_map::Entry::Occupied(mut o) => {
-                    o.insert(nonce.max(*o.get()));
-                }
-            }
-
-            map
-        },
-    );
-
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
     for eth_txn in txs.iter() {
         txn_fees
@@ -253,8 +240,47 @@ pub fn generate_consensus_test_block(
                 first_txn_value: eth_txn.value(),
                 first_txn_gas: compute_txn_max_gas_cost(eth_txn),
                 max_gas_cost: Balance::ZERO,
+                is_delegated: false,
             });
     }
+
+    let nonces = txs
+        .iter()
+        .flat_map(|t| {
+            let mut pairs = vec![(t.signer(), t.nonce())];
+
+            if t.is_eip7702() {
+                if let Some(auth_list) = t.authorization_list() {
+                    for auth in auth_list {
+                        let authority = auth.recover_authority().unwrap();
+                        pairs.push((authority, auth.nonce()));
+                        txn_fees
+                            .entry(authority)
+                            .and_modify(|e| {
+                                e.is_delegated = true;
+                            })
+                            .or_insert(TxnFee {
+                                first_txn_value: Balance::ZERO,
+                                first_txn_gas: Balance::ZERO,
+                                max_gas_cost: Balance::ZERO,
+                                is_delegated: true,
+                            });
+                    }
+                }
+            }
+            pairs
+        })
+        .fold(BTreeMap::new(), |mut map, (address, nonce)| {
+            match map.entry(address) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(nonce);
+                }
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    o.insert(nonce.max(*o.get()));
+                }
+            }
+            map
+        });
 
     ConsensusTestBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
