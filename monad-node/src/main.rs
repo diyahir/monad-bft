@@ -713,8 +713,8 @@ where
                     RaptorCastConfigSecondary {
                         raptor10_redundancy: cfg_2nd.raptor10_fullnode_redundancy_factor,
                         mode: SecondaryRaptorCastModeConfig::Client(RaptorCastConfigSecondaryClient {
-                            bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
-                            bandwidth_capacity: cfg_2nd.bandwidth_capacity,
+                            max_num_group: cfg_2nd.max_num_group,
+                            max_group_size: cfg_2nd.max_group_size,
                             invite_future_dist_min: cfg_2nd.invite_future_dist_min,
                             invite_future_dist_max: cfg_2nd.invite_future_dist_max,
                             invite_accept_heartbeat: Duration::from_millis(cfg_2nd.invite_accept_heartbeat_ms),
@@ -764,7 +764,6 @@ where
         epoch_validators,
         pinned_full_nodes,
         bootstrap_peers,
-        ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
         unresponsive_prune_threshold: peer_discovery_config.unresponsive_prune_threshold,
