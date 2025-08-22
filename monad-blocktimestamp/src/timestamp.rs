@@ -403,8 +403,7 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
                     node_id,
                     max_delta_ns,
                     adjustment_period,
-                    //Some(100_000_000_000),
-                    None,
+                    Some(3_000_000_000),
                 )),
             },
             avg_wait_for_qc_self: Default::default(),
@@ -503,14 +502,15 @@ impl<P: PubKey, T: Clock> BlockTimestamp<P, T> {
         let estimated_raptorcast_latency_ns =
             proposal_local_ts_ns.saturating_sub(expected_block_ts);
 
+        // TODO: div by 2 below experiment to see what happens
         let delta = if proposed_block_ts_ns > expected_block_ts {
             Some(TimestampAdjustment {
-                delta: proposed_block_ts_ns - expected_block_ts,
+                delta: (proposed_block_ts_ns - expected_block_ts) * 2 / 3,
                 direction: TimestampAdjustmentDirection::Forward,
             })
         } else {
             Some(TimestampAdjustment {
-                delta: expected_block_ts - proposed_block_ts_ns,
+                delta: (expected_block_ts - proposed_block_ts_ns) * 2 / 3,
                 direction: TimestampAdjustmentDirection::Backward,
             })
         };

@@ -25,20 +25,31 @@ pub struct TimestampAdjuster<P: PubKey> {
 impl<P: PubKey> TimestampAdjuster<P> {
     pub fn new(node_id: NodeId<P>, max_delta_ns: u128, adjustment_period: usize, max_drift: Option<i64>) -> Self {
         assert!(max_delta_ns < i128::MAX as u128);
+        /* 
         assert!(
             adjustment_period % 2 == 1,
             "median accuracy expects odd period"
         );
+        */
+
         let mut init_adjustment = 0;
         let mut rng = rand::thread_rng();
         if let Some(max_drift) = max_drift {
             init_adjustment = rng.gen_range(max_drift.neg()..max_drift);
-            debug!(?init_adjustment, "Set initial clock adjustment");
+            info!(?init_adjustment, "Set initial clock adjustment");
         }
+
+        let mut rand_period = rng.gen_range(adjustment_period..2*adjustment_period);
+        if rand_period % 2 == 0 {
+            rand_period+=1;
+        }
+
+        info!(?rand_period, "Set adjustment period");
+
         Self {
             node_id,
             adjustment: init_adjustment,
-            adjustment_period,
+            adjustment_period: rand_period,
             deltas: SortedVec::new(),
             max_delta_ns,
         }
@@ -59,7 +70,7 @@ impl<P: PubKey> TimestampAdjuster<P> {
                 new_adjustment = adjustment,
                 "Set block timestamper adjustment"
             );
-
+ 
             self.adjustment = adjustment;
             self.deltas.clear();
         }

@@ -324,7 +324,7 @@ where
                         live_to_statesync_threshold: SeqNum(900),
                         start_execution_threshold: SeqNum(300),
                         chain_config: MockChainConfig::new(unsafe { &CHAIN_PARAMS }),
-                        timestamp_latency_estimate_ns: 10_000_000,
+                        timestamp_latency_estimate_ns: 20_000_000,
                         _phantom: Default::default(),
                     },
                 },
