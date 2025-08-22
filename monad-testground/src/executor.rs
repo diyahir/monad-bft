@@ -214,7 +214,7 @@ where
         consensus_config: config.consensus_config,
         adjuster_config: TimestampAdjusterConfig::Enabled {
             max_delta_ns: 10_000_000_000,
-            adjustment_period: 501,
+            adjustment_period: 201,
         },
         _phantom: PhantomData,
     }

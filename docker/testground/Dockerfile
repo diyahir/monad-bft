@@ -90,4 +90,4 @@ COPY --from=builder /usr/src/monad-bft/topology-gen.py .
 COPY --from=builder /usr/src/monad-bft/tc-gen.py .
 COPY --from=builder /usr/src/monad-bft/run_testground.sh .
 RUN chmod u+x run_testground.sh
-CMD ./run_testground.sh -l -n "50,0,0,0,0" -d INFO -s 600
+CMD ./run_testground.sh -l -n "25,0,0,0,0" -d INFO -s 600
