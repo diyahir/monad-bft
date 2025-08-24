@@ -70,7 +70,7 @@ tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true }
-object_store = { version = "0.12.3", features = ["aws", "gcp", "fs"] }
+object_store = { version = "0.12.3", features = ["aws", "fs"] }
 quick-xml = { version = "0.38" }
 
 [dev-dependencies]

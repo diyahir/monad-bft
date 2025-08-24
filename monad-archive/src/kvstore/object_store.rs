@@ -1,6 +1,5 @@
 use object_store::{
-    aws::AmazonS3Builder, gcp::GoogleCloudStorageBuilder, path::Path, Error as ObjError,
-    ObjectStore, PutPayload,
+    aws::AmazonS3Builder, path::Path, Error as ObjError, ObjectStore, ObjectStoreScheme, PutPayload,
 };
 use url::Url;
 
@@ -59,22 +58,80 @@ impl TryFrom<&ObjectStoreCliArgs> for ObjectStoreKVStore {
     type Error = eyre::Error;
 
     fn try_from(args: &ObjectStoreCliArgs) -> Result<Self> {
-        let options = if let Some(prefix) = &args.access_secret_env_var_prefix {
+        use std::env::var;
+        let mut options = vec![];
+        if let Some(prefix) = &args.access_secret_env_var_prefix {
             info!(
                 prefix,
                 "Loading access key and secret key from environment variables"
             );
-            let access_key = std::env::var(format!("{}_ACCESS_KEY", prefix))?;
-            let secret_key = std::env::var(format!("{}_SECRET_KEY", prefix))?;
-            vec![("access_key", access_key), ("secret_key", secret_key)]
-        } else {
-            vec![]
+            options.push(("access_key", var(format!("{}_ACCESS_KEY", prefix))?));
+            options.push((
+                "secret_access_key",
+                var(format!("{}_SECRET_ACCESS_KEY", prefix))?,
+            ));
         };
 
-        let (inner, path) = object_store::parse_url_opts(&Url::parse(&args.url)?, options)?;
-        info!("Object store path: {}", path.to_string());
-        Ok(Self::new(inner, args.url.clone(), path))
+        let url = Url::parse(&args.url)?;
+
+        let (scheme, path) = ObjectStoreScheme::parse(&url) else {
+            return Err(eyre!("Invalid object store URL: {}", args.url));
+        };
+        match scheme {
+            ObjectStoreScheme::AmazonS3 => {
+                let mut builder = AmazonS3Builder::from_env().with_url(url);
+
+                if let Some((access_key, secret_key)) = parse_credentials_file() {
+                    builder = builder
+                        .with_access_key_id(access_key)
+                        .with_secret_access_key(secret_key);
+                }
+
+                let inner: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                return Ok(Self::new(inner, args.url.clone(), path));
+            }
+            ObjectStoreScheme::Local | ObjectStoreScheme::Memory => {
+                let (inner, path) = object_store::parse_url_opts(&url, options)?;
+                info!("Object store path: {}", path.to_string());
+                Ok(Self::new(inner, args.url.clone(), path))
+            }
+            ObjectStoreScheme::GoogleCloudStorage => {
+                unimplemented!("Google Cloud Storage support is not implemented yet");
+                // let builder = GoogleCloudStorageBuilder::from_env().with_url(url);
+                // let inner: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                // return Ok(Self::new(inner, args.url.clone(), path));
+            }
+            ObjectStoreScheme::MicrosoftAzure => {
+                unimplemented!("Microsoft Azure support is not implemented yet");
+                // let builder = MicrosoftAzureBuilder::from_env().with_url(url);
+                // let inner: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                // return Ok(Self::new(inner, args.url.clone(), path));
+            }
+            ObjectStoreScheme::Http => {
+                unimplemented!("HTTP support is not implemented yet");
+            }
+            _ => {
+                bail!("Unsupported object store scheme: {:?}", scheme);
+            }
+        }
     }
+}
+
+fn parse_credentials_file() -> Option<(String, String)> {
+    let home = std::env::var("HOME").ok()?;
+    let config = std::fs::read_to_string(format!("{}/.aws/credentials", home)).ok()?;
+    let config = config.split("\n").collect::<Vec<&str>>();
+    let access_key = config
+        .iter()
+        .find(|line| line.starts_with("aws_access_key_id"))?
+        .split("=")
+        .nth(1)?;
+    let secret_key = config
+        .iter()
+        .find(|line| line.starts_with("aws_secret_access_key"))?
+        .split("=")
+        .nth(1)?;
+    Some((access_key.to_string(), secret_key.to_string()))
 }
 
 impl ObjectStoreKVStore {
