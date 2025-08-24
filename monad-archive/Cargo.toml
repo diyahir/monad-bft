@@ -59,11 +59,19 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = [
+    "fs",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+] }
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true }
+object_store = { version = "0.12.3", features = ["aws", "gcp"] }
+quick-xml = { version = "0.38" }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
