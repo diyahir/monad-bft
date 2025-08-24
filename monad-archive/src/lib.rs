@@ -21,7 +21,6 @@ pub mod failover_circuit_breaker;
 pub mod kvstore;
 pub mod metrics;
 pub mod model;
-pub mod obj_store;
 pub mod prelude;
 pub mod rlp_offset_scanner;
 pub mod workers;

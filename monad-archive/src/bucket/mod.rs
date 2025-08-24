@@ -1,13 +1,13 @@
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
+use enum_dispatch::enum_dispatch;
 use object_store::{path::Path, ObjectStore, PutPayload};
 
 use crate::prelude::*;
 
 pub struct ObjectStoreTableConfig {
     bucket: String,
-    table: String,
 }
 
 pub type Key = String;
@@ -19,17 +19,25 @@ pub struct HeadObj {
     pub last_modified: LastModified,
 }
 
-pub trait ObjectStoreTable {
+#[enum_dispatch]
+pub trait BucketReader {
     fn bucket_name(&self) -> &str;
-    fn table_name(&self) -> &str;
-    async fn get(&self, key: Key) -> Result<Option<Bytes>>;
-    async fn get_range(&self, key: Key, range: Range) -> Result<Option<Bytes>>;
-    async fn put(&self, key: Key, val: Bytes) -> Result<()>;
-    async fn delete(&self, key: Key) -> Result<()>;
+    async fn get(&self, key: impl Into<Path>) -> Result<Option<Bytes>>;
+    async fn get_range(
+        &self,
+        key: impl Into<Path>,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Bytes>>;
 
     // TODO: implement these later
-    // async fn head(&self, key: Key) -> Result<Option<HeadObj>>;
-    // async fn list(&self, prefix: Key) -> Result<Vec<(Key, HeadObj)>>;
+    // async fn head(&self, key: impl Into<Path>) -> Result<Option<HeadObj>>;
+    async fn list(&self, prefix: impl Into<Path>) -> Result<Vec<Path>>;
+}
+
+#[enum_dispatch]
+pub trait Bucket: BucketReader {
+    async fn put(&self, key: impl Into<Path>, val: Bytes) -> Result<()>;
+    async fn delete(&self, key: impl Into<Path>) -> Result<()>;
     // async fn copy(
     //     &self,
     //     from: Key,
@@ -66,23 +74,27 @@ impl ObjectStoreTableImpl {
     pub fn new(inner: Arc<dyn ObjectStore>, config: ObjectStoreTableConfig) -> Self {
         Self { inner, config }
     }
+}
 
-    fn key(&self, key: Key) -> Path {
-        Path::from(format!("{}/{}", self.config.table, key))
+impl Bucket for ObjectStoreTableImpl {
+    async fn put(&self, key: impl Into<Path>, val: Bytes) -> Result<()> {
+        self.inner.put(&key, PutPayload::from(val)).await?;
+        Ok(())
+    }
+
+    async fn delete(&self, key: impl Into<Path>) -> Result<()> {
+        self.inner.delete(&key).await?;
+        Ok(())
     }
 }
 
-impl ObjectStoreTable for ObjectStoreTableImpl {
+impl BucketReader for ObjectStoreTableImpl {
     fn bucket_name(&self) -> &str {
         &self.config.bucket
     }
 
-    fn table_name(&self) -> &str {
-        &self.config.table
-    }
-
-    async fn get(&self, key: Key) -> Result<Option<Bytes>> {
-        match self.inner.get(&self.key(key)).await {
+    async fn get(&self, key: impl Into<Path>) -> Result<Option<Bytes>> {
+        match self.inner.get(&key).await {
             Ok(obj) => {
                 let bytes = obj.bytes().await?;
                 Ok(Some(bytes))
@@ -92,23 +104,16 @@ impl ObjectStoreTable for ObjectStoreTableImpl {
         }
     }
 
-    async fn get_range(&self, key: Key, range: Range) -> Result<Option<Bytes>> {
-        match self.inner.get_range(&self.key(key), range.into()).await {
+    async fn get_range(&self, key: impl Into<Path>, range: Range) -> Result<Option<Bytes>> {
+        match self.inner.get_range(&key, range.into()).await {
             Ok(obj) => Ok(Some(obj)),
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
-    async fn put(&self, key: Key, val: Bytes) -> Result<()> {
-        self.inner
-            .put(&self.key(key), PutPayload::from(val))
-            .await?;
-        Ok(())
-    }
-
-    async fn delete(&self, key: Key) -> Result<()> {
-        self.inner.delete(&self.key(key)).await?;
-        Ok(())
+    async fn list(&self, prefix: impl Into<Path>) -> Result<Vec<Path>> {
+        let resp = self.inner.list(Some(&prefix)).await?;
+        Ok(resp.into_iter().map(|o| o.location).collect())
     }
 }

@@ -196,8 +196,7 @@ impl CheckerModel {
         end: Option<u64>,
     ) -> Result<BTreeSet<u64>> {
         // Calculate the common prefix for optimization if possible
-        let prefix_suffix = Self::find_chunk_range_prefix(start, end);
-        let key_prefix = format!("{}/{}/{}", FAULTS_CHUNK_PREFIX, replica, prefix_suffix);
+        let key_prefix = format!("{}/{}", FAULTS_CHUNK_PREFIX, replica);
         let keys = self.store.scan_prefix(&key_prefix).await?;
 
         let chunks = keys
@@ -236,77 +235,6 @@ impl CheckerModel {
             .collect::<BTreeSet<u64>>();
 
         Ok(chunks)
-    }
-
-    /// Find a common prefix for chunk starts in a given range
-    /// Returns empty string if no useful prefix exists
-    fn find_chunk_range_prefix(start: Option<u64>, end: Option<u64>) -> String {
-        use crate::CHUNK_SIZE;
-
-        match (start, end) {
-            (Some(start), Some(end)) => {
-                // Calculate chunk starts
-                let start_chunk = (start / CHUNK_SIZE) * CHUNK_SIZE;
-                let end_chunk = (end / CHUNK_SIZE) * CHUNK_SIZE;
-
-                // If they're in the same chunk, return the exact chunk
-                if start_chunk == end_chunk {
-                    return start_chunk.to_string();
-                }
-
-                // Find common prefix between chunk starts
-                let start_str = start_chunk.to_string();
-                let end_str = end_chunk.to_string();
-
-                // Only use prefix if both strings have the same length
-                // This avoids false matches like "1" matching both 1000 and 10000
-                if start_str.len() != end_str.len() {
-                    return String::new();
-                }
-
-                // Find the longest common prefix
-                let common_prefix: String = start_str
-                    .chars()
-                    .zip(end_str.chars())
-                    .take_while(|(a, b)| a == b)
-                    .map(|(c, _)| c)
-                    .collect();
-
-                // Only use the prefix if it narrows down the search meaningfully
-                // For longer numbers, require at least 1-2 characters
-                let min_prefix_len = match start_str.len() {
-                    1..=3 => start_str.len(), // For short numbers, need full match
-                    4..=5 => 2,               // For medium numbers, need at least 2 chars
-                    _ => 1,                   // For long numbers, even 1 char helps
-                };
-
-                if common_prefix.len() >= min_prefix_len {
-                    common_prefix
-                } else {
-                    String::new()
-                }
-            }
-            (Some(start), None) => {
-                // For start-only, we can't optimize much without knowing the end
-                // Only use a prefix for very large chunk numbers where it helps
-                let start_chunk = (start / CHUNK_SIZE) * CHUNK_SIZE;
-                let start_str = start_chunk.to_string();
-
-                // Only use prefix for chunks with 5+ digits
-                if start_str.len() >= 5 {
-                    // Take first 2-3 digits as prefix
-                    let prefix_len = start_str.len() / 2;
-                    start_str.chars().take(prefix_len).collect()
-                } else {
-                    String::new()
-                }
-            }
-            (None, Some(_end)) => {
-                // For end-only, we can't really optimize much
-                String::new()
-            }
-            (None, None) => String::new(),
-        }
     }
 
     pub async fn find_chunk_starts_with_faults(&self) -> Result<BTreeSet<u64>> {
@@ -1104,94 +1032,6 @@ mod tests {
         assert!(result.contains(&1_000_001_000));
         assert!(result.contains(&1_100_000_000));
         assert!(!result.contains(&2_000_000_000));
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_same_chunk() {
-        // When start and end are in the same chunk, return the exact chunk
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(1200), Some(1800)),
-            "1000"
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(0), Some(999)),
-            "0"
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(5000), Some(5999)),
-            "5000"
-        );
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_with_common_prefix() {
-        // Chunks with meaningful common prefix
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(100_000), Some(109_999)),
-            "10" // chunks 100000 and 109000 share prefix "10"
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(500_000), Some(599_999)),
-            "5" // chunks 500000 and 599000 share prefix "5"
-        );
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_no_common_prefix() {
-        // Chunks with no meaningful common prefix
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(1_000), Some(2_000)),
-            "" // chunks 1000 and 2000 have no common prefix
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(100_000), Some(200_000)),
-            "" // chunks 100000 and 200000 don't share enough prefix
-        );
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_different_lengths() {
-        // Chunks with different string lengths should return empty
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(1_000), Some(10_000)),
-            "" // "1000" and "10000" have different lengths
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(9_999), Some(10_000)),
-            "" // chunks 9000 and 10000 have different lengths
-        );
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_start_only() {
-        // With only start, use prefix for large chunks
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(1_234), None),
-            "" // chunk 1000 is too short (< 5 digits)
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(12_345), None),
-            "12" // chunk 12000 (5 digits), take first 2 digits
-        );
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(Some(123_456), None),
-            "123" // chunk 123000 (6 digits), take first 3 digits
-        );
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_end_only() {
-        // With only end, can't optimize
-        assert_eq!(
-            CheckerModel::find_chunk_range_prefix(None, Some(10_000)),
-            ""
-        );
-    }
-
-    #[test]
-    fn test_find_chunk_range_prefix_neither() {
-        // With neither start nor end
-        assert_eq!(CheckerModel::find_chunk_range_prefix(None, None), "");
     }
 
     #[tokio::test]

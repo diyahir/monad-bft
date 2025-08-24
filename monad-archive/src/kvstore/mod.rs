@@ -17,6 +17,7 @@ pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod memory;
 pub mod mongo;
+pub mod object_store;
 pub mod s3;
 pub mod triedb_reader;
 
@@ -32,7 +33,7 @@ use tokio_retry::{
 };
 
 use self::{cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage};
-use crate::prelude::*;
+use crate::{kvstore::object_store::ObjectStoreKVStore, prelude::*};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KVStoreType {
@@ -64,6 +65,7 @@ pub enum KVStoreErased {
     DynamoDBArchive,
     MemoryStorage,
     MongoDbStorage,
+    ObjectStoreKVStore,
 }
 
 #[enum_dispatch(KVReader)]
@@ -74,6 +76,7 @@ pub enum KVReaderErased {
     DynamoDBArchive,
     CloudProxyReader,
     MongoDbStorage,
+    ObjectStoreKVStore,
 }
 
 impl From<KVStoreErased> for KVReaderErased {
@@ -83,6 +86,7 @@ impl From<KVStoreErased> for KVReaderErased {
             KVStoreErased::MemoryStorage(x) => KVReaderErased::MemoryStorage(x),
             KVStoreErased::DynamoDBArchive(x) => KVReaderErased::DynamoDBArchive(x),
             KVStoreErased::MongoDbStorage(x) => KVReaderErased::MongoDbStorage(x),
+            KVStoreErased::ObjectStoreKVStore(x) => KVReaderErased::ObjectStoreKVStore(x),
         }
     }
 }

@@ -23,7 +23,10 @@ use eyre::{bail, OptionExt};
 use futures::join;
 use serde::{Deserialize, Serialize};
 
-use crate::{kvstore::mongo::MongoDbStorage, prelude::*};
+use crate::{
+    kvstore::{mongo::MongoDbStorage, object_store::ObjectStoreKVStore},
+    prelude::*,
+};
 
 const DEFAULT_BLOB_STORE_TIMEOUT: u64 = 30;
 const DEFAULT_INDEX_STORE_TIMEOUT: u64 = 20;
@@ -48,6 +51,16 @@ pub fn set_source_and_sink_metrics(
                 vec![opentelemetry::KeyValue::new("sink_store_type", "mongodb")],
             );
         }
+        ArchiveArgs::ObjectStore(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SINK_STORE_TYPE,
+                4, // 3 is for triedb
+                vec![opentelemetry::KeyValue::new(
+                    "sink_store_type",
+                    "object_store",
+                )],
+            );
+        }
     }
 
     match source {
@@ -70,6 +83,16 @@ pub fn set_source_and_sink_metrics(
                 MetricNames::SOURCE_STORE_TYPE,
                 3,
                 vec![opentelemetry::KeyValue::new("source_store_type", "triedb")],
+            );
+        }
+        BlockDataReaderArgs::ObjectStore(_) => {
+            metrics.periodic_gauge_with_attrs(
+                MetricNames::SOURCE_STORE_TYPE,
+                4,
+                vec![opentelemetry::KeyValue::new(
+                    "source_store_type",
+                    "object_store",
+                )],
             );
         }
     }
@@ -110,12 +133,14 @@ pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     Triedb(TrieDbCliArgs),
     MongoDb(MongoDbCliArgs),
+    ObjectStore(ObjectStoreCliArgs),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     MongoDb(MongoDbCliArgs),
+    ObjectStore(ObjectStoreCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -135,6 +160,7 @@ impl FromStr for BlockDataReaderArgs {
             "aws" => Aws(AwsCliArgs::parse(next)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(next)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(next)?),
+            "object-store" => ObjectStore(ObjectStoreCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
             }
@@ -158,6 +184,7 @@ impl FromStr for ArchiveArgs {
         Ok(match first.to_lowercase().as_str() {
             "aws" => Aws(AwsCliArgs::parse(next)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(next)?),
+            "object-store" => ObjectStore(ObjectStoreCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
             }
@@ -175,6 +202,10 @@ impl BlockDataReaderArgs {
                 MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone()).await?,
             )
             .into(),
+            ObjectStore(object_store_cli_args) => {
+                let store = ObjectStoreKVStore::try_from(object_store_cli_args)?;
+                BlockDataArchive::new(store).into()
+            }
         })
     }
 
@@ -186,6 +217,7 @@ impl BlockDataReaderArgs {
             MongoDb(mongo_db_cli_args) => {
                 format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
             }
+            ObjectStore(object_store_cli_args) => object_store_cli_args.url.clone(),
         }
     }
 }
@@ -198,6 +230,9 @@ impl ArchiveArgs {
                 MongoDbStorage::new_block_store(&args.url, &args.db, metrics.clone())
                     .await?
                     .into()
+            }
+            ArchiveArgs::ObjectStore(object_store_cli_args) => {
+                ObjectStoreKVStore::try_from(object_store_cli_args)?.into()
             }
         };
         Ok(BlockDataArchive::new(store))
@@ -223,6 +258,13 @@ impl ArchiveArgs {
                     .await?
                     .into(),
             ),
+            ArchiveArgs::ObjectStore(object_store_cli_args) => {
+                warn!("Object store should not be used for index store.");
+                (
+                    ObjectStoreKVStore::try_from(object_store_cli_args)?.into(),
+                    ObjectStoreKVStore::try_from(object_store_cli_args)?.into(),
+                )
+            }
         };
         Ok(TxIndexArchiver::new(
             index,
@@ -247,6 +289,13 @@ impl ArchiveArgs {
                     .await?
                     .into(),
             ),
+            ArchiveArgs::ObjectStore(object_store_cli_args) => {
+                warn!("Object store should not be used for index store.");
+                (
+                    ObjectStoreKVStore::try_from(object_store_cli_args)?.into(),
+                    ObjectStoreKVStore::try_from(object_store_cli_args)?.into(),
+                )
+            }
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
         Ok(ArchiveReader::new(
@@ -261,6 +310,7 @@ impl ArchiveArgs {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.db.clone(),
+            ArchiveArgs::ObjectStore(args) => args.url.clone(),
         }
     }
 }
@@ -301,6 +351,21 @@ impl AwsCliArgs {
             metrics.clone(),
         )
         .into()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct ObjectStoreCliArgs {
+    pub url: String,
+    pub access_secret_env_var_prefix: Option<String>,
+}
+
+impl ObjectStoreCliArgs {
+    pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
+        Ok(Self {
+            url: next("storage args missing object store endpoint")?,
+            access_secret_env_var_prefix: next("Prefix for access key and secret key env var. Used with minio or other s3 compatible object stores not directly supported by object_store crate").ok(),
+        })
     }
 }
 
