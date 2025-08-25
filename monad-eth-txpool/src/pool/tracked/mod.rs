@@ -196,10 +196,17 @@ where
             return Ok(Vec::new());
         }
 
-        let sequencer = ProposalSequencer::new(&self.txs, &extending_blocks, base_fee);
+        let sequencer = ProposalSequencer::new(
+            &self.txs,
+            &extending_blocks,
+            block_policy.get_chain_id(),
+            base_fee,
+        );
         let sequencer_len = sequencer.len();
 
-        let (account_balances, account_balance_lookups) = {
+        let authority_addresses = sequencer.authority_addresses().cloned().collect_vec();
+
+        let (account_balances, authority_nonces, state_backend_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -216,6 +223,12 @@ where
                     Some(&extending_blocks),
                     sequencer.addresses(),
                 )?,
+                block_policy.get_account_base_nonces(
+                    proposed_seq_num,
+                    state_backend,
+                    &extending_blocks,
+                    authority_addresses.iter(),
+                )?,
                 state_backend.total_db_lookups() - total_db_lookups_before,
             )
         };
@@ -225,7 +238,8 @@ where
             num_txs = self.num_txs(),
             sequencer_len,
             account_balances = account_balances.len(),
-            ?account_balance_lookups,
+            authority_nonces = authority_nonces.len(),
+            ?state_backend_lookups,
             "txpool sequencing transactions"
         );
 
@@ -236,7 +250,9 @@ where
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
+            block_policy,
             account_balances,
+            authority_nonces,
             validator,
         );
 
@@ -245,7 +261,7 @@ where
         event_tracker.record_create_proposal(
             self.num_addresses(),
             sequencer_len,
-            account_balance_lookups,
+            state_backend_lookups,
             proposal_num_txs,
         );
 
