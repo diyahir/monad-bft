@@ -66,11 +66,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(state_root_delay: SeqNum, root: BlockId, resync_threshold: SeqNum) -> Self {
+    pub fn new(execution_delay: SeqNum, root: BlockId, resync_threshold: SeqNum) -> Self {
         Self {
             max_buffered_proposals: resync_threshold.0 as usize,
             resync_threshold,
-            min_num_blocks: SeqNum(state_root_delay.0.saturating_mul(2)),
+            min_num_blocks: SeqNum(execution_delay.0.saturating_mul(2)),
 
             root,
 

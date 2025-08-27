@@ -15,12 +15,12 @@
 
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
 use monad_consensus_types::block::{
-    AccountBalanceState, BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader,
+    BlockPolicyBlockValidator, BlockPolicyError, ConsensusBlockHeader,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{EthBlockPolicy, EthBlockPolicyBlockValidator, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::EthExecutionProtocol;
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_state_backend::StateBackend;
 use monad_types::{DropTimer, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, error, info, warn};
@@ -229,11 +229,15 @@ where
             "txpool sequencing transactions"
         );
 
+        let mut validator =
+            EthBlockPolicyBlockValidator::new(proposed_seq_num, block_policy.execution_delay)?;
+
         let proposal = sequencer.build_proposal(
             tx_limit,
             proposal_gas_limit,
             proposal_byte_limit,
             account_balances,
+            validator,
         );
 
         let proposal_num_txs = proposal.txs.len();
@@ -363,70 +367,6 @@ where
 
         true
     }
-
-    /*
-    fn create_proposal_tx_list(
-        &self,
-        tx_limit: usize,
-        proposal_gas_limit: u64,
-        proposal_byte_limit: u64,
-        tx_heap: TrackedTxHeap<'_>,
-        proposed_seq_num: SeqNum,
-        execution_delay: SeqNum,
-        account_balances: BTreeMap<Address, AccountBalanceState>,
-    ) -> Result<(u64, Vec<Recovered<TxEnvelope>>), BlockPolicyError> {
-        assert!(tx_limit > 0);
-
-        let mut txs = Vec::new();
-        let mut total_gas = 0u64;
-        let mut total_size = 0u64;
-
-        let mut balances = account_balances;
-        let mut validator = EthBlockPolicyBlockValidator::new(proposed_seq_num, execution_delay)?;
-
-        tx_heap.drain_in_order_while(|_, tx| {
-            if total_gas
-                .checked_add(tx.gas_limit())
-                .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)
-            {
-                return TrackedTxHeapDrainAction::Skip;
-            }
-
-            let tx_size = tx.size();
-            if total_size
-                .checked_add(tx_size)
-                .is_none_or(|new_total_size| new_total_size > proposal_byte_limit)
-            {
-                return TrackedTxHeapDrainAction::Skip;
-            }
-
-            let res = validator.try_add_transaction(&mut balances, tx.raw());
-
-            if res.is_err() {
-                debug!(
-                    err = ?res,
-                    signer = ?tx.raw().signer(),
-                    gas_limit = ?tx.gas_limit(),
-                    value = ?tx.raw().value(),
-                    gas_fee = ?tx.raw().max_fee_per_gas(),
-                    "insufficient balance");
-                return TrackedTxHeapDrainAction::Skip;
-            }
-
-            total_gas += tx.gas_limit();
-            total_size += tx_size;
-            txs.push(tx.raw().to_owned());
-
-            if txs.len() < tx_limit {
-                TrackedTxHeapDrainAction::Continue
-            } else {
-                TrackedTxHeapDrainAction::Stop
-            }
-        });
-
-        Ok((total_gas, txs))
-    }
-    */
 
     pub fn update_committed_block(
         &mut self,

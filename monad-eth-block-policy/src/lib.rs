@@ -258,7 +258,9 @@ where
         );
 
         let mut next_validate = emptying_txn_check_block_range.start;
-        for (_, block) in self.blocks.range(emptying_txn_check_block_range) {
+        for (seq_num, block) in self.blocks.range(emptying_txn_check_block_range) {
+            assert_eq!(*seq_num, next_validate, "Emptying range is not contiguous");
+
             if block.fees.get(eth_address).is_some()
                 && account_balance.block_seqnum_of_latest_txn < block.seq_num
             {
@@ -267,7 +269,11 @@ where
             next_validate += SeqNum(1);
         }
 
-        for (_, block) in self.blocks.range(reserve_balance_check_block_range) {
+        for (seq_num, block) in self.blocks.range(reserve_balance_check_block_range) {
+            assert_eq!(
+                *seq_num, next_validate,
+                "Reserve balance check range is not contiguous"
+            );
             if let Some(block_txn_fees) = block.fees.get(eth_address) {
                 let mut validator =
                     EthBlockPolicyBlockValidator::new(block.seq_num, execution_delay)?;
@@ -448,7 +454,7 @@ where
 
     fn try_add_transaction(
         &mut self,
-        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         txn: &Self::Transaction,
     ) -> Result<(), BlockPolicyError> {
         let eth_address = txn.signer();
@@ -476,11 +482,13 @@ where
         if is_emptying_transaction {
             let txn_max_gas = compute_txn_max_gas_cost(txn);
             if account_balance.balance < txn_max_gas {
-                warn!(
+                debug!(
                     seq_num =?self.block_seq_num,
                     ?account_balance,
                     ?txn_max_gas,
-                    "Incoherent block with insufficient balance"
+                    ?txn,
+                    ?is_emptying_transaction,
+                    "Emptyign txn can not be accepted insufficient reserve balance"
                 );
                 return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                     BlockPolicyBlockValidatorError::InsufficientBalance,
@@ -518,7 +526,8 @@ where
                     ?account_balance,
                     ?txn_max_gas,
                     ?txn,
-                    "Txn can not be accepted insufficient reserve balance"
+                    ?is_emptying_transaction,
+                    "Non-emptying txn can not be accepted insufficient reserve balance"
                 );
                 return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
                     BlockPolicyBlockValidatorError::InsufficientReserveBalance,
@@ -698,7 +707,7 @@ where
         state_backend: &impl StateBackend<ST, SCT>,
         extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
         addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<BTreeMap<Address, AccountBalanceState>, BlockPolicyError>
+    ) -> Result<BTreeMap<&'a Address, AccountBalanceState>, BlockPolicyError>
     where
         SCT: SignatureCollection,
     {
@@ -736,18 +745,21 @@ where
             })
             .collect_vec();
 
-        let account_balances: Result<BTreeMap<Address, AccountBalanceState>, BlockPolicyError> =
+        let account_balances: Result<BTreeMap<&'a Address, AccountBalanceState>, BlockPolicyError> =
             addresses
                 .into_iter()
-                .cloned()
                 .zip_eq(account_balances)
                 .map(|(address, mut balance_state)| {
                     // N - k + 1
                     let reserve_balance_check_start = base_seq_num + SeqNum(1);
                     // N - 2k + 2
-                    let emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
+                    let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
                         .max(self.execution_delay)
                         - self.execution_delay;
+
+                    if emptying_txn_check_start == GENESIS_SEQ_NUM {
+                        emptying_txn_check_start += SeqNum(1);
+                    }
 
                     // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
                     let emptying_txn_check_block_range =
@@ -763,7 +775,7 @@ where
                     // check for emptying txs and reserve balance in committed blocks
                     let mut next_validate = self.committed_cache.update_account_balance(
                         &mut balance_state,
-                        &address,
+                        address,
                         self.execution_delay,
                         emptying_txn_check_block_range,
                         reserve_balance_check_block_range,
@@ -777,7 +789,8 @@ where
                             .skip_while(move |block| block.get_seq_num() < next_validate);
 
                         for extending_block in next_blocks {
-                            if let Some(txn_fee) = extending_block.txn_fees.get(&address) {
+                            assert_eq!(next_validate, extending_block.get_seq_num());
+                            if let Some(txn_fee) = extending_block.txn_fees.get(address) {
                                 // if still within check emptying range, update latest tx seq num
                                 // otherwise check for reserve balance
                                 if next_validate < reserve_balance_check_start {
@@ -794,7 +807,7 @@ where
                                     validator.try_apply_block_fees(
                                         &mut balance_state,
                                         txn_fee,
-                                        &address,
+                                        address,
                                     )?;
                                 }
                             }
@@ -1051,7 +1064,8 @@ mod test {
         seq_num: SeqNum,
         txs: Vec<Recovered<TxEnvelope>>,
     ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
-        let consensus_test_block = generate_consensus_test_block(round, seq_num, txs);
+        let consensus_test_block =
+            generate_consensus_test_block(round, seq_num, BASE_FEE_PER_GAS, txs);
         EthValidatedBlock {
             block: consensus_test_block.block,
             system_txns: Vec::new(),
@@ -1556,9 +1570,9 @@ mod test {
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx);
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance,
@@ -1575,9 +1589,9 @@ mod test {
                 .is_ok());
         }
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: min_balance - Balance::from(1),
                 remaining_reserve_balance: min_balance,
@@ -1610,9 +1624,9 @@ mod test {
         let signer = tx.recover_signer().unwrap();
         let min_balance = compute_txn_max_gas_cost(&tx);
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance,
@@ -1629,9 +1643,9 @@ mod test {
                 .is_ok());
         }
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance - Balance::from(1),
@@ -1665,9 +1679,9 @@ mod test {
 
         let address = Address(FixedBytes([0x11; 20]));
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            address,
+            &address,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: min_balance,
@@ -1701,9 +1715,9 @@ mod test {
         let min_balance = compute_txn_max_value(&tx);
 
         // Empty reserve balance
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: Balance::ZERO,
@@ -1723,9 +1737,9 @@ mod test {
         // Overdraft
         let block_seq_num = latest_seq_num;
         let min_reserve = compute_txn_max_gas_cost(&tx);
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: Balance::ZERO,
                 remaining_reserve_balance: min_reserve,
@@ -1757,9 +1771,9 @@ mod test {
         let txs = vec![tx1.clone(), tx2.clone()];
         let min_balance = compute_txn_max_value(&tx1) + compute_txn_max_gas_cost(&tx2);
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: min_balance,
                 remaining_reserve_balance: Balance::ZERO,
@@ -1778,9 +1792,9 @@ mod test {
 
         let min_reserve = compute_txn_max_gas_cost(&tx1) + compute_txn_max_gas_cost(&tx2);
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
         account_balances.insert(
-            signer,
+            &signer,
             AccountBalanceState {
                 balance: Balance::ZERO,
                 remaining_reserve_balance: min_reserve,
@@ -1844,8 +1858,8 @@ mod test {
         let txn = make_test_eip1559_tx(txn_value, 0, txn_gas_limit, S1);
         let signer = txn.recover_signer().unwrap();
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
-        account_balances.insert(signer, abs);
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(&signer, abs);
 
         let mut validator = EthBlockPolicyBlockValidator::new(block_seq_num, EXEC_DELAY).unwrap();
 
@@ -1899,8 +1913,8 @@ mod test {
             .collect_vec();
         let signer = txns[0].recover_signer().unwrap();
 
-        let mut account_balances: BTreeMap<Address, AccountBalanceState> = BTreeMap::new();
-        account_balances.insert(signer, abs);
+        let mut account_balances: BTreeMap<&Address, AccountBalanceState> = BTreeMap::new();
+        account_balances.insert(&signer, abs);
 
         for ((tx, expect), seqnum) in txns.into_iter().zip(expected).zip(txn_block_num) {
             check_txn_helper(seqnum, &mut account_balances, &tx, expect);
@@ -1909,7 +1923,7 @@ mod test {
 
     fn check_txn_helper(
         block_seq_num: SeqNum,
-        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         txn: &Recovered<TxEnvelope>,
         expect: Result<(), BlockPolicyError>,
     ) {

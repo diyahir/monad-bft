@@ -30,12 +30,12 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
+use monad_state_backend::StateBackend;
 use monad_system_calls::generate_system_calls;
 use monad_types::SeqNum;
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -192,6 +192,13 @@ where
             let Some(_new_reserve_balance) =
                 tx.apply_max_gas_cost(account_balance.remaining_reserve_balance)
             else {
+                trace!(
+            "Do not add txn to the pool. insufficient reserve balance after applying carriage cost: {remaining_reserve_balance:?} \
+                            for address: {address:?}",
+            address = tx.signer(),
+            remaining_reserve_balance = account_balance.remaining_reserve_balance,
+        );
+
                 event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
                 continue;
             };

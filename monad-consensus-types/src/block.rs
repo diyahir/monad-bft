@@ -228,7 +228,7 @@ where
 
     fn try_add_transaction(
         &mut self,
-        account_balances: &mut BTreeMap<Address, AccountBalanceState>,
+        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         txn: &Self::Transaction,
     ) -> Result<(), BlockPolicyError>;
 }

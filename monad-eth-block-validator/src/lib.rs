@@ -358,7 +358,7 @@ where
 #[cfg(test)]
 mod test {
     use alloy_consensus::Signed;
-    use alloy_primitives::{PrimitiveSignature, B256};
+    use alloy_primitives::{PrimitiveSignature, B256, U256};
     use monad_consensus_types::{
         payload::{ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
         quorum_certificate::QuorumCertificate,
@@ -367,7 +367,7 @@ mod test {
     use monad_eth_testutil::make_legacy_tx;
     use monad_state_backend::InMemoryState;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 
     use super::*;
 
@@ -575,7 +575,7 @@ mod test {
         // ECDSA signature is malleable
         // given a signature, we can form a second signature by computing additive inverse of s and flips v
         let original_signature = valid_txn.signature();
-        let secp256k1_n = Balance::from_str_radix(
+        let secp256k1_n = U256::from_str_radix(
             "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )

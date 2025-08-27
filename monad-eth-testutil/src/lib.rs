@@ -33,7 +33,7 @@ use monad_crypto::{
     },
     NopKeyPair, NopSignature,
 };
-use monad_eth_block_policy::{compute_txn_max_gas_cost, compute_txn_max_value, EthValidatedBlock};
+use monad_eth_block_policy::{compute_txn_max_gas_cost, EthValidatedBlock};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
@@ -226,9 +226,10 @@ pub fn generate_consensus_test_block(
 pub fn generate_block_with_txs(
     round: Round,
     seq_num: SeqNum,
+    base_fee: u64,
     txs: Vec<Recovered<TxEnvelope>>,
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
-    let test_block = generate_consensus_test_block(round, seq_num, txs);
+    let test_block = generate_consensus_test_block(round, seq_num, base_fee, txs);
 
     EthValidatedBlock {
         block: test_block.block,
