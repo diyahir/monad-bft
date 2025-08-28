@@ -234,22 +234,6 @@ where
     pub _phantom: PhantomData<CRT>,
 }
 
-/// Actions after state root validation
-#[derive(Debug)]
-pub enum StateRootAction {
-    /// StateRoot validation is successful, proceed to next steps
-    Proceed,
-    /// StateRoot validation is unsuccessful - there's a mismatch of StateRoots.
-    /// Reject the proposal immediately
-    Reject,
-    /// StateRoot validation is undecided - we haven't collect enough
-    /// information. Either the state root is missing because we haven't
-    /// received a majority quorum on the state root, or the state root is
-    /// out-of-range. It's ok to insert to the block tree and observe if a QC
-    /// forms on the block. But we shouldn't vote on the block
-    Defer,
-}
-
 impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -825,7 +809,7 @@ where
         let process_certificate_cmds = self.process_qc(timeout.high_extend.qc());
         cmds.extend(process_certificate_cmds);
 
-        if let HighExtendVote::Tip(tip, vote_signature) = &timeout.high_extend {
+        if let HighExtendVote::Tip(tip, Some(vote_signature)) = &timeout.high_extend {
             let handle_vote_cmds = self.handle_vote_message(
                 author,
                 VoteMessage {
@@ -1830,6 +1814,7 @@ where
 
                     beneficiary: *self.beneficiary,
                     timestamp_ns,
+
                     extending_blocks: pending_blocktree_blocks.into_iter().cloned().collect(),
                     delayed_execution_results,
                 });
@@ -1927,7 +1912,7 @@ mod test {
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
     use monad_eth_types::{
-        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader, BASE_FEE_PER_GAS,
+        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader,
     };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
@@ -1950,7 +1935,6 @@ mod test {
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
-    use tracing_test::traced_test;
 
     use crate::{
         timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
@@ -1958,8 +1942,9 @@ mod test {
         NUM_LEADERS_SELF_UPCOMING,
     };
 
-    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
-    const GAS_LIMIT: u64 = 30000;
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
 
     static CHAIN_PARAMS: ChainParams = ChainParams {
         tx_limit: 10_000,
@@ -2157,10 +2142,11 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 Vec::new(),
             )
@@ -2188,10 +2174,11 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 delayed_execution_results,
             )
@@ -2220,10 +2207,11 @@ mod test {
                     mix_hash: round_signature.get_hash().0,
                     nonce: [0_u8; 8],
                     extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE_PER_GAS,
+                    base_fee_per_gas: BASE_FEE,
                     blob_gas_used: 0,
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
+                    requests_hash: [0_u8; 32],
                 },
                 delayed_execution_results,
             )
@@ -2572,7 +2560,6 @@ mod test {
     }
 
     // 2f+1 votes for a Vote leads to a QC locking -- ie, high_qc is set to that QC.
-    #[traced_test]
     #[test]
     fn lock_qc_high() {
         let num_state = 4;
@@ -3067,10 +3054,10 @@ mod test {
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
-            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_, _, _)))
+            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_, _, _, _)))
             .unwrap();
 
-        let tmo = if let PacemakerCommand::PrepareTimeout(tmo, _, _) = broadcast_cmd {
+        let tmo = if let PacemakerCommand::PrepareTimeout(tmo, _, _, _) = broadcast_cmd {
             tmo
         } else {
             panic!()
@@ -3313,7 +3300,7 @@ mod test {
     #[test]
     fn test_missing_block() {
         let num_state = 4;
-        let execution_delay = SeqNum(1);
+        let execution_delay = SeqNum::MAX;
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
@@ -3381,13 +3368,13 @@ mod test {
             execution_delay,
         );
 
-        let mut wrapped_state = ctx[0].wrapped_state();
+        let n0 = &mut ctx[0];
 
-        // prepare 5 blocks
         for _ in 0..4 {
             let p = env.next_proposal(Vec::new());
             let (author, _, p) = p.destructure();
-            let _cmds = wrapped_state.handle_proposal_message(author, p);
+            let _cmds = n0.handle_proposal_message(author, p.clone());
+            n0.ledger_propose(&p.tip.block_header);
         }
         let p = env.next_proposal(vec![EthHeader(Header {
             number: 0,
@@ -3395,19 +3382,14 @@ mod test {
         })]);
         let (author, _, p) = p.destructure();
         let bid_1 = p.tip.block_header.get_id();
-        let _cmds = wrapped_state.handle_proposal_message(author, p);
+        let _cmds = n0.handle_proposal_message(author, p);
+
         // valid execution result, so is coherent
-        assert!(wrapped_state
-            .consensus
-            .pending_block_tree
-            .is_coherent(&bid_1));
+        assert!(n0.consensus_state.pending_block_tree.is_coherent(&bid_1));
 
-        assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
+        assert_eq!(n0.consensus_state.get_current_round(), Round(5));
 
-        assert_eq!(
-            wrapped_state.metrics.consensus_events.rx_execution_lagging,
-            0
-        );
+        assert_eq!(n0.metrics.consensus_events.rx_execution_lagging, 0);
 
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
@@ -3418,15 +3400,12 @@ mod test {
         let (author, _, p) = p.destructure();
         let bid_2 = p.tip.block_header.get_id();
 
-        let cmds = wrapped_state.handle_proposal_message(author, p);
+        let cmds = n0.handle_proposal_message(author, p);
         // invalid execution result, so incoherent and we don't vote
-        assert!(!wrapped_state
-            .consensus
-            .pending_block_tree
-            .is_coherent(&bid_2));
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_bad_state_root, 1);
+        assert!(!n0.consensus_state.pending_block_tree.is_coherent(&bid_2));
+        assert_eq!(n0.metrics.consensus_events.rx_bad_state_root, 1);
 
-        assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
+        assert_eq!(n0.consensus_state.get_current_round(), Round(6));
         assert_eq!(cmds.len(), 4);
         assert!(matches!(
             cmds[0],
@@ -3793,7 +3772,6 @@ mod test {
     /// 2. state[0] processes an invalid proposal `invalid_p2`. It's rejected
     ///    and not added to the block tree. It emits an event for
     ///    `invalid_proposal_round_leader`
-    #[traced_test]
     #[test]
     fn test_reject_non_leader_proposal() {
         let num_state = 4;
@@ -3852,6 +3830,9 @@ mod test {
             p2.tip.block_header.seq_num,
             p2.tip.block_header.timestamp_ns,
             p2.tip.block_header.round_signature,
+            BASE_FEE,
+            BASE_FEE_TREND,
+            BASE_FEE_MOMENT,
         );
         let invalid_p2 = ProposalMessage {
             proposal_epoch: invalid_bh2.epoch,

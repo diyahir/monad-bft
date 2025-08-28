@@ -25,6 +25,8 @@ use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
 
+const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
+
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
@@ -49,7 +51,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             (
                 pool,
                 metrics,
-                generate_block_with_txs(Round(1), SeqNum(1), txs),
+                generate_block_with_txs(Round(1), SeqNum(1), BASE_FEE_PER_GAS, txs),
             )
         },
         |(pool, metrics, block)| {

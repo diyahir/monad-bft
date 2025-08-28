@@ -26,6 +26,8 @@ use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
 
 mod common;
 
+const BASE_FEE: u64 = 100_000_000_000;
+
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
@@ -49,6 +51,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             pool.create_proposal(
                 &mut EthTxPoolEventTracker::new(metrics, &mut BTreeMap::default()),
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
+                BASE_FEE,
                 *proposal_tx_limit,
                 *proposal_gas_limit,
                 *proposal_byte_limit,

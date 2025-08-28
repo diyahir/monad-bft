@@ -691,6 +691,12 @@ where
                     );
                     self_request.to = Some(to);
                     self.metrics.blocksync_events.self_headers_request += 1;
+
+                    debug!(
+                        ?to,
+                        ?block_range,
+                        "blocksync: header not found locally, sending request"
+                    );
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
                         request: BlockSyncRequestMessage::Headers(block_range),
@@ -796,6 +802,12 @@ where
                     );
                     self_request.to = Some(to);
                     self.metrics.blocksync_events.self_payload_request += 1;
+
+                    debug!(
+                        ?to,
+                        ?payload_id,
+                        "blocksync: payload not found locally, sending request"
+                    );
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
                         request: BlockSyncRequestMessage::Payload(payload_id),
@@ -982,7 +994,7 @@ where
                     self.block_sync.self_headers_requests.entry(block_range)
                 {
                     let self_request = entry.get_mut();
-                    if self_request.to.is_some() {
+                    if let Some(previous_to) = self_request.to {
                         let to = Self::pick_peer(
                             self.nodeid,
                             self.current_epoch,
@@ -991,6 +1003,13 @@ where
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
+
+                        debug!(
+                            ?previous_to,
+                            ?to,
+                            ?block_range,
+                            "blocksync: header request timed out, sending new request"
+                        );
                         cmds.push(BlockSyncCommand::SendRequest {
                             to,
                             request: BlockSyncRequestMessage::Headers(block_range),
@@ -1011,7 +1030,7 @@ where
                         return cmds;
                     };
 
-                    if self_request.to.is_some() {
+                    if let Some(previous_to) = self_request.to {
                         let to = Self::pick_peer(
                             self.nodeid,
                             self.current_epoch,
@@ -1020,6 +1039,13 @@ where
                             &mut self.block_sync.rng,
                         );
                         self_request.to = Some(to);
+
+                        debug!(
+                            ?previous_to,
+                            ?to,
+                            ?payload_id,
+                            "blocksync: payload request timed out, sending new request"
+                        );
                         cmds.push(BlockSyncCommand::SendRequest {
                             to,
                             request: BlockSyncRequestMessage::Payload(payload_id),
@@ -1089,6 +1115,10 @@ mod test {
         blocksync::BLOCKSYNC_MAX_PAYLOAD_REQUESTS,
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
+
+    const BASE_FEE: u64 = 100_000_000_000;
+    const BASE_FEE_TREND: u64 = 0;
+    const BASE_FEE_MOMENT: u64 = 0;
 
     struct BlockSyncContext<ST, SCT, EPT, BPT, SBT, VTF, LT>
     where
@@ -1277,6 +1307,9 @@ mod test {
                     seq_num,
                     timestamp,
                     RoundSignature::new(round, leader_certkey),
+                    BASE_FEE,
+                    BASE_FEE_TREND,
+                    BASE_FEE_MOMENT,
                 );
 
                 let validator_cert_pubkeys = self

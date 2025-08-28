@@ -20,7 +20,7 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_eth_types::Balance;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -35,6 +35,7 @@ const S1: B256 = B256::new(hex!(
 
 const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
 const FORWARD_MAX_RETRIES: usize = 2;
+const BASE_FEE: u64 = 100_000_000_000;
 
 fn with_txpool(
     insert_tx_owned: bool,
@@ -47,7 +48,7 @@ fn with_txpool(
         &mut EthTxPoolEventTracker,
     ),
 ) {
-    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10));
+    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE.into(), 100_000, 0, 10));
     let eth_block_policy =
         EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(GENESIS_SEQ_NUM, 4, 1337);
     let state_backend = InMemoryStateInner::new(
@@ -67,7 +68,7 @@ fn with_txpool(
 
     pool.update_committed_block(
         &mut event_tracker,
-        generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
+        generate_block_with_txs(Round(0), SeqNum(0), BASE_FEE, Vec::default()),
     );
 
     assert_eq!(
@@ -110,6 +111,7 @@ fn test_simple() {
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
+                    BASE_FEE,
                     Vec::default(),
                 ),
             );
@@ -144,6 +146,7 @@ fn test_forwarded() {
                 generate_block_with_txs(
                     Round(idx as u64 + 1),
                     SeqNum(idx as u64 + 1),
+                    BASE_FEE,
                     Vec::default(),
                 ),
             );
@@ -173,6 +176,7 @@ fn test_multiple_sequential_commits() {
                     generate_block_with_txs(
                         Round(round_seqnum),
                         SeqNum(round_seqnum),
+                        BASE_FEE,
                         Vec::default(),
                     ),
                 );
@@ -196,6 +200,65 @@ fn test_multiple_sequential_commits() {
                     0
                 );
             }
+        }
+    });
+}
+
+#[test]
+fn test_base_fee() {
+    with_txpool(true, |mut pool, event_tracker| {
+        let mut round = 1;
+
+        for _ in 0..FORWARD_MAX_RETRIES {
+            for _ in 0..128 {
+                pool.update_committed_block(
+                    event_tracker,
+                    generate_block_with_txs(
+                        Round(round),
+                        SeqNum(round),
+                        BASE_FEE + 1,
+                        Vec::default(),
+                    ),
+                );
+                round += 1;
+
+                assert_eq!(
+                    pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                        .unwrap()
+                        .count(),
+                    0
+                );
+            }
+
+            pool.update_committed_block(
+                event_tracker,
+                generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
+            );
+            round += 1;
+
+            assert_eq!(
+                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
+
+        for _ in 0..128 {
+            pool.update_committed_block(
+                event_tracker,
+                generate_block_with_txs(Round(round), SeqNum(round), BASE_FEE, Vec::default()),
+            );
+            round += 1;
+
+            // Subsequent calls do not produce the tx
+            //  -> Validates that forwarding is non-bursty
+            assert_eq!(
+                pool.get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                    .unwrap()
+                    .count(),
+                0
+            );
         }
     });
 }

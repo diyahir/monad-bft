@@ -23,7 +23,7 @@ use monad_types::{ExecutionProtocol, FinalizedHeader, SeqNum};
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
-pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
+// pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
 
 pub type Nonce = u64;
 pub type Balance = U256;
@@ -53,6 +53,8 @@ pub struct ProposedEthHeader {
     pub blob_gas_used: u64,
     pub excess_blob_gas: u64,
     pub parent_beacon_block_root: [u8; 32],
+    // eip-7685
+    pub requests_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
