@@ -19,7 +19,7 @@ monad-types = { workspace = true }
 monad-validator = { workspace = true }
 
 alloy-consensus = { workspace = true }
-alloy-eips = { workspace = true }
+alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 itertools = { workspace = true }
 sorted_vector_map = { workspace = true }

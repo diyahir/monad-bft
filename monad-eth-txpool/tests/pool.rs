@@ -1284,7 +1284,7 @@ fn test_eip7702_valid_authorization_changes_nonce() {
         },
         TxPoolTestEvent::AssertNonce {
             address: secret_to_eth_address(S2),
-            nonce: 0,
+            nonce: 1,
         },
         TxPoolTestEvent::CommitPendingBlocks {
             num_blocks: 1,
@@ -1295,11 +1295,11 @@ fn test_eip7702_valid_authorization_changes_nonce() {
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![&tx2],
-            add_to_blocktree: false,
+            add_to_blocktree: true,
         },
         TxPoolTestEvent::AssertNonce {
             address: secret_to_eth_address(S2),
-            nonce: 1,
+            nonce: 2,
         },
     ]);
 }

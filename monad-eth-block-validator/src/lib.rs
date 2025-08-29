@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{btree_map::Entry as BTreeMapEntry, BTreeMap, BTreeSet, VecDeque},
     marker::PhantomData,
 };
 
@@ -36,7 +36,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, validation::static_validate_transaction, EthBlockPolicy,
-    EthValidatedBlock,
+    EthValidatedBlock, NonceUsage, NonceUsageMap,
 };
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_secp::RecoverableAddress;
@@ -47,7 +47,6 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, trace, trace_span, warn};
 
-type NonceMap = BTreeMap<Address, Nonce>;
 type SystemTransactions = Vec<SystemTransaction>;
 type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
@@ -87,7 +86,8 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         max_code_size: usize,
-    ) -> Result<(SystemTransactions, ValidatedTxns, NonceMap, TxnFees), BlockValidationError> {
+    ) -> Result<(SystemTransactions, ValidatedTxns, NonceUsageMap, TxnFees), BlockValidationError>
+    {
         let EthBlockBody {
             transactions,
             ommers,
@@ -132,16 +132,25 @@ where
             };
 
         // recover the account nonces for system txns
-        let mut nonces = BTreeMap::new();
+        let mut nonce_usages = NonceUsageMap::default();
 
         // duplicate check. this is also done in SystemTransactionValidator
         for sys_txn in &system_txns {
-            let maybe_old_nonce = nonces.insert(sys_txn.signer(), sys_txn.nonce());
+            let maybe_old_nonce_usage = nonce_usages.add_known(sys_txn.signer(), sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if sys_txn.nonce() != old_nonce + 1 {
+            if let Some(old_nonce_usage) = maybe_old_nonce_usage {
+                let Some(expected_nonce) = sys_txn.nonce().checked_sub(1) else {
                     return Err(BlockValidationError::SystemTxnError);
+                };
+
+                match old_nonce_usage {
+                    NonceUsage::Known(old_nonce) => {
+                        if expected_nonce != old_nonce {
+                            return Err(BlockValidationError::SystemTxnError);
+                        }
+                    }
+                    NonceUsage::Possible(_) => {}
                 }
             }
         }
@@ -167,13 +176,22 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            let maybe_old_nonce = nonces.insert(eth_txn.signer(), eth_txn.nonce());
+            let maybe_old_nonce_usage = nonce_usages.add_known(eth_txn.signer(), eth_txn.nonce());
             // txn iteration is following the same order as they are in the
             // block. A block is invalid if we see a smaller or equal nonce
             // after the first or if there is a nonce gap
-            if let Some(old_nonce) = maybe_old_nonce {
-                if eth_txn.nonce() != old_nonce + 1 {
+            if let Some(old_nonce_usage) = maybe_old_nonce_usage {
+                let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
                     return Err(BlockValidationError::TxnError);
+                };
+
+                match old_nonce_usage {
+                    NonceUsage::Known(old_nonce) => {
+                        if expected_nonce != old_nonce {
+                            return Err(BlockValidationError::TxnError);
+                        }
+                    }
+                    NonceUsage::Possible(_) => {}
                 }
             }
 
@@ -199,37 +217,38 @@ where
 
             if eth_txn.is_eip7702() {
                 if let Some(auth_list) = eth_txn.authorization_list() {
-                    for (result, nonce, code_address, chain_id) in auth_list
-                        .iter()
-                        .map(|a| (a.recover_authority(), a.nonce(), a.address(), a.chain_id()))
-                    {
-                        match result {
-                            Ok(authority) => {
-                                trace!(?code_address, ?nonce, ?authority, "Signed authority");
-                                if chain_id != 0_u64 && chain_id != self.chain_id {
-                                    continue;
-                                }
+                    for (authority, authorization) in auth_list.iter().flat_map(|authorization| {
+                        authorization
+                            .recover_authority()
+                            .ok()
+                            .map(|authority| (authority, authorization.inner()))
+                    }) {
+                        trace!(address =? authorization.address, nonce =? authorization.nonce, ?authority, "Signed authority");
 
-                                match nonces.get_mut(&authority) {
-                                    Some(n) => {
-                                        if *n + 1 != nonce {
-                                            debug!(expected_nonce = ?*n+1, auth_tuple_nonce = nonce, ?authority, "authority nonce error");
-                                            continue;
-                                        }
-                                        *n += 1;
-                                    }
-                                    None => {
-                                        nonces.insert(authority, nonce);
+                        if authorization.chain_id != 0_u64
+                            && authorization.chain_id != self.chain_id
+                        {
+                            continue;
+                        }
+
+                        match nonce_usages.entry(authority) {
+                            BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
+                                NonceUsage::Known(nonce) => {
+                                    if *nonce + 1 == authorization.nonce {
+                                        *nonce += 1;
                                     }
                                 }
-
-                                let txn_fee = txn_fees.entry(authority).or_default();
-                                txn_fee.is_delegated = true;
-                            }
-                            Err(error) => {
-                                continue;
+                                NonceUsage::Possible(possible_nonces) => {
+                                    possible_nonces.push(authorization.nonce);
+                                }
+                            },
+                            BTreeMapEntry::Vacant(nonce_usage) => {
+                                nonce_usage.insert(NonceUsage::Possible(vec![authorization.nonce]));
                             }
                         }
+
+                        let txn_fee = txn_fees.entry(authority).or_default();
+                        txn_fee.is_delegated = true;
                     }
                 }
             }
@@ -254,7 +273,7 @@ where
             return Err(BlockValidationError::TxnError);
         }
 
-        Ok((system_txns, eth_txns, nonces, txn_fees))
+        Ok((system_txns, eth_txns, nonce_usages, txn_fees))
     }
 
     fn validate_block_header(
@@ -380,7 +399,7 @@ where
     >{
         self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((system_txns, validated_txns, nonces, txn_fees)) = self.validate_block_body(
+        if let Ok((system_txns, validated_txns, nonce_usages, txn_fees)) = self.validate_block_body(
             &header,
             &body,
             tx_limit,
@@ -393,7 +412,7 @@ where
                 block,
                 system_txns,
                 validated_txns,
-                nonces,
+                nonce_usages,
                 txn_fees,
             })
         } else {
