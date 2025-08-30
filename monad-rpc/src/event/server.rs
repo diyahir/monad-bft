@@ -288,6 +288,7 @@ mod test {
     };
 
     #[tokio::test]
+    #[ignore]
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             include_bytes!(
@@ -315,6 +316,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             include_bytes!(

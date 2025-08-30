@@ -498,13 +498,13 @@ impl App {
                 ),
                 Text::from(
                     DateTime::from_timestamp(
-                        block.start.exec_input.timestamp.try_into().unwrap(),
+                        block.start.eth_block_input.timestamp.try_into().unwrap(),
                         0,
                     )
                     .unwrap()
                     .to_rfc3339(),
                 ),
-                Text::from(block.start.exec_input.txn_count.to_string()),
+                Text::from(block.start.eth_block_input.txn_count.to_string()),
             ]
             .into_iter()
             .map(|mut text| {
@@ -625,7 +625,8 @@ impl App {
             epoch,
             parent_eth_hash,
             chain_id,
-            exec_input,
+            eth_block_input,
+            __bindgen_padding_0, proposal_epoch_nanos, author, monad_block_input
         } = start;
 
         let rows: Vec<(&'static str, String, Box<[u8]>)> = vec![
@@ -652,16 +653,16 @@ impl App {
                 Box::new(unsafe { std::mem::transmute::<[u64; 4], [u8; 32]>(chain_id.limbs) }),
             ),
             (
-                "exec_input.base_fee_per_gas",
-                U256::from_limbs(exec_input.base_fee_per_gas.limbs).to_string(),
+                "eth_block_input.base_fee_per_gas",
+                U256::from_limbs(eth_block_input.base_fee_per_gas.limbs).to_string(),
                 Box::new(unsafe { std::mem::transmute::<[u64; 4], [u8; 32]>(chain_id.limbs) }),
             ),
             (
-                "exec_input.beneficiary",
-                Address::from(exec_input.beneficiary.bytes).to_string(),
-                Box::new(exec_input.beneficiary.bytes),
+                "eth_block_input.beneficiary",
+                Address::from(eth_block_input.beneficiary.bytes).to_string(),
+                Box::new(eth_block_input.beneficiary.bytes),
             ),
-            // TODO(andr-dev): Add remaining exec_input fields
+            // TODO(andr-dev): Add remaining eth_block_input fields
         ];
 
         Self::render_block_table(frame, area, table_state, rows);

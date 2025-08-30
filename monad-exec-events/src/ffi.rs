@@ -23,7 +23,7 @@ pub(crate) use self::bindings::{
     MONAD_EXEC_EVM_ERROR, MONAD_EXEC_NONE, MONAD_EXEC_STORAGE_ACCESS, MONAD_EXEC_TXN_CALL_FRAME,
     MONAD_EXEC_TXN_END, MONAD_EXEC_TXN_EVM_OUTPUT, MONAD_EXEC_TXN_LOG,
     MONAD_EXEC_TXN_PERF_EVM_ENTER, MONAD_EXEC_TXN_PERF_EVM_EXIT, MONAD_EXEC_TXN_REJECT,
-    MONAD_EXEC_TXN_START, MONAD_FLOW_ACCOUNT_INDEX, MONAD_FLOW_BLOCK_SEQNO, MONAD_FLOW_TXN_ID,
+    MONAD_EXEC_TXN_HEADER_START, MONAD_FLOW_ACCOUNT_INDEX, MONAD_FLOW_BLOCK_SEQNO, MONAD_FLOW_TXN_ID,
 };
 pub use self::bindings::{
     monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
@@ -31,7 +31,7 @@ pub use self::bindings::{
     monad_exec_block_finalized, monad_exec_block_qc, monad_exec_block_reject,
     monad_exec_block_start, monad_exec_block_tag, monad_exec_block_verified, monad_exec_evm_error,
     monad_exec_storage_access, monad_exec_txn_call_frame, monad_exec_txn_evm_output,
-    monad_exec_txn_log, monad_exec_txn_reject, monad_exec_txn_start, MONAD_TXN_EIP1559,
+    monad_exec_txn_log, monad_exec_txn_reject, monad_exec_txn_header_start, MONAD_TXN_EIP1559,
     MONAD_TXN_EIP2930, MONAD_TXN_LEGACY,
 };
 

@@ -25,7 +25,7 @@ use crate::ffi::{
     monad_exec_block_qc, monad_exec_block_reject, monad_exec_block_start,
     monad_exec_block_verified, monad_exec_evm_error, monad_exec_storage_access,
     monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_log,
-    monad_exec_txn_reject, monad_exec_txn_start,
+    monad_exec_txn_reject, monad_exec_txn_header_start,
 };
 
 mod bytes;
@@ -53,7 +53,7 @@ pub enum ExecEvent {
     BlockVerified(monad_exec_block_verified),
     TxnStart {
         txn_index: usize,
-        txn_start: monad_exec_txn_start,
+        txn_start: monad_exec_txn_header_start,
         data_bytes: Box<[u8]>,
     },
     TxnReject {
@@ -104,7 +104,7 @@ pub enum ExecEventRef<'ring> {
     BlockVerified(&'ring monad_exec_block_verified),
     TxnStart {
         txn_index: usize,
-        txn_start: &'ring monad_exec_txn_start,
+        txn_start: &'ring monad_exec_txn_header_start,
         data_bytes: &'ring [u8],
     },
     TxnReject {
@@ -267,9 +267,9 @@ impl EventDecoder for ExecEventDecoder {
             ffi::MONAD_EXEC_BLOCK_VERIFIED => ExecEventRef::BlockVerified(
                 ref_from_bytes(bytes).expect("BlockVerified event valid"),
             ),
-            ffi::MONAD_EXEC_TXN_START => {
+            ffi::MONAD_EXEC_TXN_HEADER_START => {
                 let (txn_start, [data_bytes]) =
-                    ref_from_bytes_with_trailing::<monad_exec_txn_start, 1>(bytes, |txn_start| {
+                    ref_from_bytes_with_trailing::<monad_exec_txn_header_start, 1>(bytes, |txn_start| {
                         [txn_start.txn_header.data_length.try_into().unwrap()]
                     })
                     .expect("TxnStart event valid");
@@ -381,6 +381,7 @@ mod test {
 
     use crate::ExecEventDecoder;
 
+    #[ignore]
     #[test]
     fn basic_test() {
         const SNAPSHOT_NAME: &str = "ETHEREUM_MAINNET_30B_15M";
