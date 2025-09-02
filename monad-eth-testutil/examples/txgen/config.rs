@@ -444,7 +444,17 @@ pub struct UniswapConfig {}
 pub struct ReserveBalanceConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemSpamConfig {}
+pub struct SystemSpamConfig {
+    pub call_type: SystemCallType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemCallType {
+    Reward,
+    Snapshot,
+    EpochChange,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemKeyNormalConfig {}
