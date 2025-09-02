@@ -22,7 +22,6 @@ use clap::Parser;
 use prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 
-pub mod cli;
 pub mod config;
 pub mod generators;
 pub mod prelude;
@@ -30,36 +29,51 @@ pub mod run;
 pub mod shared;
 pub mod workers;
 
+#[derive(Debug, Parser)]
+#[command(name = "txgen", about, long_about = None)]
+pub struct CliConfig {
+    #[arg(long, short)]
+    pub config_file: String,
+}
+
 #[tokio::main]
 async fn main() {
-    let cli_config = cli::CliConfig::parse();
-    let config = cli_config
-        .load_config()
-        .expect("Failed to load configuration");
+    let cli_config = CliConfig::parse();
+    let config =
+        config::Config::from_file(&cli_config.config_file).expect("Failed to load configuration");
 
     if let Err(e) = setup_logging(config.trace_log_file, config.debug_log_file) {
         error!("Error setting up logging: {e:?}");
     }
 
-    let client: ReqwestClient =
-        ClientBuilder::default().http(config.rpc_url().expect("Invalid RPC URL"));
+    let rpc_urls = config.rpc_urls().expect("Invalid RPC URLs");
+    let clients = rpc_urls
+        .into_iter()
+        .map(|url| ClientBuilder::default().http(url))
+        .collect();
 
     info!("Config: {config:?}");
 
-    for traffic_gen in &config.traffic_gen {
-        let time_to_send_txs_from_all_senders = (config.tx_per_sender(traffic_gen)
-            * config.senders(traffic_gen)) as f64
-            / traffic_gen.tps as f64;
-        if time_to_send_txs_from_all_senders < config.refresh_delay_secs {
-            warn!(
-                time_to_send_txs_from_all_senders,
-                refresh_delay = config.refresh_delay_secs,
-                "Not enough senders for given tps to prevent stall during refresh"
-            );
+    // Check if the time to send txs from all senders is less than the refresh delay
+    for workload_group in &config.workload_groups {
+        for traffic_gen in &workload_group.traffic_gens {
+            let time_to_send_txs_from_all_senders = (traffic_gen.tx_per_sender()
+                * traffic_gen.senders()) as f64
+                / traffic_gen.tps as f64;
+
+            if time_to_send_txs_from_all_senders < config.refresh_delay_secs {
+                warn!(
+                    workload_group = workload_group.name,
+                    traffic_gen = ?traffic_gen.gen_mode,
+                    time_to_send_txs_from_all_senders,
+                    refresh_delay = config.refresh_delay_secs,
+                    "Not enough senders for given tps to prevent stall during refresh"
+                );
+            }
         }
     }
 
-    if let Err(e) = run::run(client, config).await {
+    if let Err(e) = run::run(clients, config).await {
         error!("Fatal error: {e:?}");
     }
 }

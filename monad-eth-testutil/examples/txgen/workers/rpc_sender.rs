@@ -28,9 +28,9 @@ use crate::config::{Config, GenMode};
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
     pub refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
-    pub recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
 
-    pub client: ReqwestClient,
+    pub clients: Vec<ReqwestClient>,
+    pub round_robin_idx: usize,
     pub target_tps: u64,
     pub metrics: Arc<Metrics>,
     pub sent_txs: Arc<DashMap<TxHash, Instant>>,
@@ -50,8 +50,7 @@ impl RpcSender {
     pub fn new(
         gen_rx: mpsc::Receiver<AccountsWithTxs>,
         refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
-        recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
-        client: ReqwestClient,
+        clients: Vec<ReqwestClient>,
         metrics: Arc<Metrics>,
         sent_txs: Arc<DashMap<TxHash, Instant>>,
         config: &Config,
@@ -61,8 +60,8 @@ impl RpcSender {
         Self {
             gen_rx,
             refresh_sender,
-            recipient_sender,
-            client,
+            clients,
+            round_robin_idx: 0,
             metrics,
             sent_txs,
             gen_mode: traffic_gen.gen_mode.clone(),
@@ -223,14 +222,21 @@ impl RpcSender {
         (total_txs as f64 / count as f64).round() as u64
     }
 
-    fn spawn_send_batch(&self, batch: &[(TxEnvelope, Address)]) {
+    fn spawn_send_batch(&mut self, batch: &[(TxEnvelope, Address)]) {
         if batch.is_empty() {
-            return; // unnecessary?
+            return;
         }
-        trace!(batch_size = batch.len(), "Sending batch of txs...");
 
-        let recipient_sender = self.recipient_sender.clone();
-        let client = self.client.clone();
+        // round robin through clients
+        self.round_robin_idx = (self.round_robin_idx + 1) % self.clients.len();
+        let client = self.clients[self.round_robin_idx].clone();
+
+        trace!(
+            batch_size = batch.len(),
+            rpc_url = client.inner().transport().url(),
+            "Sending batch of txs..."
+        );
+
         let metrics = self.metrics.clone();
         let sent_txs = self.sent_txs.clone();
         let shutdown = self.shutdown.clone();
@@ -244,26 +250,7 @@ impl RpcSender {
 
             send_batch(&client, batch.iter().map(|(tx, _)| tx), &metrics).await;
 
-            trace!("Tx batch sent, sending accts to recipient tracker...");
-            if let Err(e) = recipient_sender.send(AddrsWithTime {
-                addrs: batch.iter().map(|(_, a)| *a).collect(),
-                sent: Instant::now(),
-            }) {
-                if shutdown.load(Ordering::Relaxed) {
-                    debug!(
-                        "Failed to send addresses to recipient tracker during shutdown: {}",
-                        e
-                    );
-                } else {
-                    error!(
-                        "Failed to send addresses to recipient tracker unexpectedly: {}",
-                        e
-                    );
-                }
-                return;
-            }
-
-            trace!("Sent accts to recipient tracker");
+            trace!("Tx batch sent");
         });
     }
 }

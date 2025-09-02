@@ -27,7 +27,6 @@ use super::*;
 
 #[derive(Default)]
 pub struct Metrics {
-    pub accts_with_nonzero_bal: AtomicUsize,
     pub total_txs_sent: AtomicUsize,
     pub total_rpc_calls: AtomicUsize,
     pub total_committed_txs: AtomicUsize,
@@ -64,7 +63,6 @@ impl Metrics {
         let mut last = Instant::now();
 
         // Basic metrics
-        let mut nonzero_accts = Rate::new(&self.accts_with_nonzero_bal);
         let mut txs_sent = Rate::new(&self.total_txs_sent);
         let mut rpc_calls = Rate::new(&self.total_rpc_calls);
         let mut committed_txs = Rate::new(&self.total_committed_txs);
@@ -95,11 +93,9 @@ impl Metrics {
             let tx_success_ps = receipts_tx_success.rate(elapsed);
 
             info!(
-                nonzero_accts = nonzero_accts.val(),
                 sent_txs = txs_sent.val(),
                 committed_txs = committed_txs.val(),
                 rps = rpc_calls.rate(elapsed),
-                accts_created_ps = nonzero_accts.rate(elapsed),
                 tx_success_ps,
                 committed_tps = committed_txs.rate(elapsed),
                 tps = txs_sent.rate(elapsed),
@@ -173,7 +169,6 @@ pub struct MetricsReporter {
     // Gauges
     committed_tps: Gauge<u64>,
     sent_tps: Gauge<u64>,
-    accts_created_ps: Gauge<u64>,
     rpc_calls_ps: Gauge<u64>,
     rpc_calls_error_ps: Gauge<u64>,
     contracts_deployed_ps: Gauge<u64>,
@@ -186,7 +181,6 @@ pub struct MetricsReporter {
 }
 
 struct Rates<'a> {
-    nonzero_accts: Rate<'a>,
     txs_sent: Rate<'a>,
     rpc_calls: Rate<'a>,
     committed_txs: Rate<'a>,
@@ -215,7 +209,6 @@ impl MetricsReporter {
 
             committed_tps: meter.u64_gauge("committed_tps").build(),
             sent_tps: meter.u64_gauge("sent_tps").build(),
-            accts_created_ps: meter.u64_gauge("accts_created_ps").build(),
             rpc_calls_ps: meter.u64_gauge("rpc_calls_ps").build(),
             rpc_calls_error_ps: meter.u64_gauge("rpc_calls_error_ps").build(),
             contracts_deployed_ps: meter.u64_gauge("contracts_deployed_ps").build(),
@@ -231,7 +224,6 @@ impl MetricsReporter {
             0.1,
             // TODO: Make this cleaner
             &mut Rates {
-                nonzero_accts: Rate::new(&metrics.accts_with_nonzero_bal),
                 txs_sent: Rate::new(&metrics.total_txs_sent),
                 rpc_calls: Rate::new(&metrics.total_rpc_calls),
                 committed_txs: Rate::new(&metrics.total_committed_txs),
@@ -249,7 +241,6 @@ impl MetricsReporter {
         let mut last = Instant::now();
 
         let mut rates = Rates {
-            nonzero_accts: Rate::new(&self.metrics.accts_with_nonzero_bal),
             txs_sent: Rate::new(&self.metrics.total_txs_sent),
             rpc_calls: Rate::new(&self.metrics.total_rpc_calls),
             committed_txs: Rate::new(&self.metrics.total_committed_txs),
@@ -288,8 +279,6 @@ impl MetricsReporter {
                 self.gen_mode.clone(),
             )],
         );
-        self.accts_created_ps
-            .record(rates.nonzero_accts.rate(elapsed) as u64, &[]);
         self.rpc_calls_ps
             .record(rates.rpc_calls.rate(elapsed) as u64, &[]);
         self.rpc_calls_error_ps

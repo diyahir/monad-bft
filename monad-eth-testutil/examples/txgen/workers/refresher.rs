@@ -15,45 +15,49 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use eyre::bail;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
-use crate::{
-    config::{DeployedContract, GenMode},
-    shared::erc20::ERC20,
-};
+use crate::{config::DeployedContract, shared::erc20::ERC20};
 
 pub struct Refresher {
     pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
-    pub gen_sender: mpsc::Sender<Accounts>,
+    pub gen_sender: async_channel::Sender<Accounts>,
 
     pub client: ReqwestClient,
     pub metrics: Arc<Metrics>,
     pub erc20: Option<ERC20>,
-    pub gen_mode: GenMode,
+    pub workload_group_name: String,
 
     pub delay: Duration,
-
     pub shutdown: Arc<AtomicBool>,
 }
 
 impl Refresher {
     pub fn new(
         rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
-        gen_sender: mpsc::Sender<Accounts>,
+        gen_sender: async_channel::Sender<Accounts>,
 
         client: ReqwestClient,
         metrics: Arc<Metrics>,
 
         delay: Duration,
 
-        deployed_contract: DeployedContract,
+        deployed_contracts: Vec<DeployedContract>,
         refresh_erc20_balance: bool,
-        gen_mode: GenMode,
+        workload_group_name: String,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Refresher> {
         let erc20 = if refresh_erc20_balance {
-            Some(deployed_contract.erc20().wrap_err("Cannot construct Refresher: refresh_erc20_balance arg requires erc20 contract be deployed or loaded")?)
+            let Some(erc20) = deployed_contracts
+                .into_iter()
+                .filter_map(|dc| dc.erc20().ok())
+                .next()
+            else {
+                bail!("Cannot construct Refresher: refresh_erc20_balance arg requires erc20 contract be deployed or loaded");
+            };
+            Some(erc20)
         } else {
             None
         };
@@ -64,7 +68,7 @@ impl Refresher {
             metrics,
             delay,
             erc20,
-            gen_mode,
+            workload_group_name,
             shutdown,
         })
     }
@@ -73,13 +77,16 @@ impl Refresher {
         let mut interval = tokio::time::interval(Duration::from_millis(5));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        info!("Starting refresher loop with gen_mode: {:?}", self.gen_mode);
+        info!(
+            "Starting refresher loop for workload group: {}",
+            self.workload_group_name
+        );
         while let Some(AccountsWithTime { accts, sent }) = self.rpc_rx.recv().await {
             if self.shutdown.load(Ordering::Relaxed) {
                 break;
             }
             info!(
-                gen_mode = ?self.gen_mode,
+                workload_group_name = self.workload_group_name,
                 num_accts = accts.len(),
                 channel_len = self.rpc_rx.len(),
                 "Refresher received accts"
