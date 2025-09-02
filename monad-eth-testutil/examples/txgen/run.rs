@@ -14,7 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    future::Future,
     io::Write,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -32,60 +34,83 @@ use crate::{
     shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap},
 };
 
-pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
-    if config.traffic_gen.is_empty() {
-        bail!("No traffic generation configurations provided");
+/// Runs the txgen for the given config
+///
+/// This function will run each workload group in sequence, and when the runtime of the current workload group is reached, it will move to the next workload group.
+/// It will repeat this process until all workload groups have been run.
+///
+/// Each workload group can contain one or more traffic gens. The txgen will run each traffic gen in parallel
+pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
+    if config.workload_groups.is_empty() {
+        bail!("No workload group configurations provided");
     }
 
-    let mut traffic_index = 0;
+    let mut workload_group_index = 0;
 
     loop {
-        let current_traffic_gen = &config.traffic_gen[traffic_index];
+        let current_traffic_gen = &config.workload_groups[workload_group_index];
         info!(
-            "Starting traffic generation phase {}: {:?}",
-            traffic_index, current_traffic_gen.gen_mode
+            "Starting workload group phase {}: {:?}",
+            workload_group_index, current_traffic_gen.name
         );
 
-        run_traffic_phase(&client, &config, current_traffic_gen).await?;
+        run_workload_group(&clients, &config, current_traffic_gen).await?;
 
-        traffic_index = (traffic_index + 1) % config.traffic_gen.len();
+        workload_group_index = (workload_group_index + 1) % config.workload_groups.len();
     }
 }
 
-async fn run_traffic_phase(
-    client: &ReqwestClient,
+/// Runs the workload group for the given config
+///
+/// This function will run each traffic gen in the workload group in parallel
+async fn run_workload_group(
+    clients: &[ReqwestClient],
     config: &Config,
-    traffic_gen: &TrafficGen,
+    workload_group: &WorkloadGroup,
 ) -> Result<()> {
+    let read_client = clients[0].clone();
+
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
 
-    let (rpc_sender, gen_rx) = mpsc::channel(2);
-    let (gen_sender, refresh_rx) = mpsc::channel(100);
+    let (gen_sender, refresh_rx) = async_channel::bounded::<Accounts>(100);
     let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
-    let (recipient_sender, recipient_gen_rx) = mpsc::unbounded_channel();
-
-    // simpler to always deploy erc20 even if not used
-    let deployed_contract = load_or_deploy_contracts(config, client).await?;
-
-    // kick start cycle by injecting accounts
-    generate_sender_groups(config, traffic_gen).for_each(|group| {
-        if let Err(e) = refresh_sender.send(group) {
-            if shutdown.load(Ordering::Relaxed) {
-                debug!("Failed to send account group during shutdown: {}", e);
-            } else {
-                error!("Failed to send account group unexpectedly: {}", e);
-            }
-        }
-    });
 
     // shared state for monitoring
     let metrics = Arc::new(Metrics::default());
-    let sent_txs = Arc::new(DashMap::with_capacity(traffic_gen.tps as usize * 10));
+    let sent_txs = Arc::new(DashMap::with_capacity(100_000));
+
+    // Shared tasks for all workers in the workload group
+    let mut tasks = FuturesUnordered::new();
+    // Deployed contract for each traffic gen
+    let mut deployed_contracts = Vec::new();
+    for traffic_gen in &workload_group.traffic_gens {
+        // deploy contracts for each traffic gen in the workload group
+        let deployed_contract = load_or_deploy_contracts(config, traffic_gen, &read_client).await?;
+        deployed_contracts.push(deployed_contract.clone());
+
+        run_traffic_gen(
+            clients,
+            config,
+            traffic_gen,
+            refresh_sender.clone(),
+            refresh_rx.clone(),
+            &shutdown,
+            &mut tasks,
+            metrics.clone(),
+            deployed_contract,
+            sent_txs.clone(),
+        )?;
+    }
+
+    let refresh_erc20_balance = workload_group
+        .traffic_gens
+        .iter()
+        .any(|tg| tg.erc20_balance_of);
 
     // setup metrics and monitoring
     let committed_tx_watcher = CommittedTxWatcher::new(
-        client,
+        &read_client,
         &sent_txs,
         &metrics,
         Duration::from_secs_f64(config.refresh_delay_secs * 2.),
@@ -93,66 +118,27 @@ async fn run_traffic_phase(
     )
     .await;
 
-    let recipient_tracker = RecipientTracker {
-        rpc_sender_rx: recipient_gen_rx,
-        client: client.clone(),
-        delay: Duration::from_secs_f64(config.refresh_delay_secs),
-        non_zero: Default::default(),
-        metrics: Arc::clone(&metrics),
-    };
-
-    // primary workers
-    let generator = make_generator(config, traffic_gen, deployed_contract.clone())?;
-    let gen = GeneratorHarness::new(
-        generator,
-        refresh_rx,
-        rpc_sender,
-        client,
-        U256::from(config.min_native_amount),
-        U256::from(config.seed_native_amount),
-        &metrics,
-        config.base_fee(),
-        config.chain_id,
-        traffic_gen.gen_mode.clone(),
-        Arc::clone(&shutdown),
-    );
-
+    // Refresher is a primary worker
     let refresher = Refresher::new(
         rpc_rx,
         gen_sender,
-        client.clone(),
+        read_client,
         Arc::clone(&metrics),
         Duration::from_secs_f64(config.refresh_delay_secs),
-        deployed_contract,
-        traffic_gen.erc20_balance_of,
-        traffic_gen.gen_mode.clone(),
+        deployed_contracts,
+        refresh_erc20_balance,
+        workload_group.name.clone(),
         Arc::clone(&shutdown),
     )?;
-
-    let rpc_sender = RpcSender::new(
-        gen_rx,
-        refresh_sender,
-        recipient_sender,
-        client.clone(),
-        Arc::clone(&metrics),
-        sent_txs,
-        config,
-        traffic_gen,
-        Arc::clone(&shutdown),
-    );
 
     let metrics_reporter = MetricsReporter::new(
         metrics.clone(),
         config.otel_endpoint.clone(),
         config.otel_replica_name.clone(),
-        format!("{:?}", traffic_gen.gen_mode),
+        workload_group.name.clone(),
     )?;
 
-    let mut tasks = FuturesUnordered::new();
-
     // abort if critical task stops
-    tasks.push(critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed());
-    tasks.push(critical_task("Generator Harness", tokio::spawn(gen.run())).boxed());
     tasks.push(critical_task("Refresher", tokio::spawn(refresher.run())).boxed());
 
     // continue working if helper task stops
@@ -174,14 +160,6 @@ async fn run_traffic_phase(
     );
     tasks.push(
         helper_task(
-            "Recipient Tracker",
-            tokio::spawn(recipient_tracker.run(Arc::clone(&shutdown))),
-            Arc::clone(&shutdown),
-        )
-        .boxed(),
-    );
-    tasks.push(
-        helper_task(
             "CommittedTx Watcher",
             tokio::spawn(committed_tx_watcher.run()),
             Arc::clone(&shutdown),
@@ -189,11 +167,12 @@ async fn run_traffic_phase(
         .boxed(),
     );
 
-    let timeout = tokio::time::sleep(Duration::from_secs(traffic_gen.runtime));
+    let runtime_seconds = (workload_group.runtime_minutes * 60.) as u64;
+    let timeout = tokio::time::sleep(Duration::from_secs(runtime_seconds));
 
     tokio::select! {
         _ = timeout => {
-            info!("Traffic phase completed after {} seconds", traffic_gen.runtime);
+            info!("Traffic phase completed after {} minutes", workload_group.runtime_minutes);
             shutdown_clone.store(true, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_millis(100)).await;
             Ok(())
@@ -212,6 +191,67 @@ async fn run_traffic_phase(
             }
         }
     }
+}
+
+fn run_traffic_gen(
+    clients: &[ReqwestClient],
+    config: &Config,
+    traffic_gen: &TrafficGen,
+    refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
+    refresh_rx: async_channel::Receiver<Accounts>,
+    shutdown: &Arc<AtomicBool>,
+    tasks: &mut FuturesUnordered<Pin<Box<dyn Future<Output = Result<()>> + Send>>>,
+    metrics: Arc<Metrics>,
+    deployed_contract: DeployedContract,
+    sent_txs: Arc<DashMap<TxHash, Instant>>,
+) -> Result<()> {
+    // let (gen_sender, refresh_rx) = mpsc::channel(100);
+    let read_client = clients[0].clone();
+
+    // kick start cycle by injecting accounts
+    generate_sender_groups(config, traffic_gen).for_each(|group| {
+        if let Err(e) = refresh_sender.send(group) {
+            if shutdown.load(Ordering::Relaxed) {
+                debug!("Failed to send account group during shutdown: {}", e);
+            } else {
+                error!("Failed to send account group unexpectedly: {}", e);
+            }
+        }
+    });
+
+    let (rpc_sender, gen_rx) = mpsc::channel(2);
+
+    let generator = make_generator(config, traffic_gen, deployed_contract)?;
+    let gen = GeneratorHarness::new(
+        generator,
+        refresh_rx,
+        rpc_sender,
+        &read_client,
+        U256::from_str_radix(&config.min_native_amount, 10).unwrap(),
+        U256::from_str_radix(&config.seed_native_amount, 10).unwrap(),
+        &metrics,
+        config.base_fee(),
+        config.chain_id,
+        traffic_gen.gen_mode.clone(),
+        Arc::clone(shutdown),
+    );
+
+    let rpc_sender = RpcSender::new(
+        gen_rx,
+        refresh_sender,
+        clients.to_vec(),
+        Arc::clone(&metrics),
+        sent_txs,
+        config,
+        traffic_gen,
+        Arc::clone(shutdown),
+    );
+
+    // Abort if critical task stops
+    tasks.push(critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed());
+    tasks.push(critical_task("Generator Harness", tokio::spawn(gen.run())).boxed());
+
+    Ok(())
 }
 
 async fn helper_task(
@@ -247,12 +287,12 @@ fn generate_sender_groups<'a>(
     traffic_gen: &'a TrafficGen,
 ) -> impl Iterator<Item = AccountsWithTime> + 'a {
     let mut rng = SmallRng::seed_from_u64(traffic_gen.sender_seed);
-    let num_groups = (config.senders(traffic_gen) / config.sender_group_size(traffic_gen)).max(1);
+    let num_groups = (traffic_gen.senders() / traffic_gen.sender_group_size()).max(1);
     let mut key_iter = config.root_private_keys.iter();
 
     (0..num_groups).map(move |_| AccountsWithTime {
         accts: Accounts {
-            accts: (0..config.sender_group_size(traffic_gen))
+            accts: (0..traffic_gen.sender_group_size())
                 .map(|_| PrivateKey::new_with_random(&mut rng))
                 .map(SimpleAccount::from)
                 .collect(),
@@ -279,17 +319,14 @@ struct DeployedContractFile {
 
 async fn load_or_deploy_contracts(
     config: &Config,
+    traffic_gen: &TrafficGen,
     client: &ReqwestClient,
 ) -> Result<DeployedContract> {
     use crate::config::RequiredContract;
 
-    // Use first contract for now, might want to check all in the future
-    let contract_to_ensure = if !config.traffic_gen.is_empty() {
-        config.required_contract(&config.traffic_gen[0])
-    } else {
-        RequiredContract::None
-    };
-    let path = "deployed_contracts.json";
+    let contract_to_ensure = traffic_gen.required_contract();
+
+    const PATH: &str = "deployed_contracts.json";
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
     let max_fee_per_gas = config.base_fee() * 2;
     let chain_id = config.chain_id;
@@ -297,7 +334,7 @@ async fn load_or_deploy_contracts(
     match contract_to_ensure {
         RequiredContract::None => Ok(DeployedContract::None),
         RequiredContract::ERC20 => {
-            match open_deployed_contracts_file(path) {
+            match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
                     erc20: Some(erc20), ..
                 }) => {
@@ -322,11 +359,11 @@ async fn load_or_deploy_contracts(
                 uniswap: None,
             };
 
-            write_and_verify_deployed_contracts(client, path, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
             Ok(DeployedContract::ERC20(erc20))
         }
         RequiredContract::ECMUL => {
-            match open_deployed_contracts_file(path) {
+            match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
                     ecmul: Some(ecmul), ..
                 }) => {
@@ -351,11 +388,11 @@ async fn load_or_deploy_contracts(
                 uniswap: None,
             };
 
-            write_and_verify_deployed_contracts(client, path, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
             Ok(DeployedContract::ECMUL(ecmul))
         }
         RequiredContract::Uniswap => {
-            match open_deployed_contracts_file(path) {
+            match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
                     uniswap: Some(uniswap),
                     ..
@@ -381,7 +418,7 @@ async fn load_or_deploy_contracts(
                 uniswap: Some(uniswap.addr),
             };
 
-            write_and_verify_deployed_contracts(client, path, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
             Ok(DeployedContract::Uniswap(uniswap))
         }
     }

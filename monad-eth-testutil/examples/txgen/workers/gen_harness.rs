@@ -35,7 +35,7 @@ pub struct GenCtx {
 pub struct GeneratorHarness {
     pub generator: Box<dyn Generator + Send + Sync>,
 
-    pub refresh_rx: mpsc::Receiver<Accounts>,
+    pub refresh_rx: async_channel::Receiver<Accounts>,
     pub rpc_sender: mpsc::Sender<AccountsWithTxs>,
 
     pub client: ReqwestClient,
@@ -53,7 +53,7 @@ pub struct GeneratorHarness {
 impl GeneratorHarness {
     pub fn new(
         generator: Box<dyn Generator + Send + Sync>,
-        refresh_rx: mpsc::Receiver<Accounts>,
+        refresh_rx: async_channel::Receiver<Accounts>,
         rpc_sender: mpsc::Sender<AccountsWithTxs>,
         client: &ReqwestClient,
         min_native: U256,
@@ -82,7 +82,7 @@ impl GeneratorHarness {
 
     pub async fn run(mut self) {
         info!("Starting main gen loop with gen_mode: {:?}", self.gen_mode);
-        while let Some(accts) = self.refresh_rx.recv().await {
+        while let Ok(accts) = self.refresh_rx.recv().await {
             if self.shutdown.load(Ordering::Relaxed) {
                 break;
             }

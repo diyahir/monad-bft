@@ -24,17 +24,18 @@ use crate::{
     shared::{ecmul::ECMul, erc20::ERC20, uniswap::Uniswap},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     #[serde(default = "default_rpc_url")]
-    pub rpc_url: String,
+    pub rpc_urls: Vec<String>,
 
     /// Funded private keys used to seed native tokens to sender accounts
     #[serde(default = "default_root_private_keys")]
     pub root_private_keys: Vec<String>,
 
-    /// Traffic generation configurations to run sequentially
-    pub traffic_gen: Vec<TrafficGen>,
+    /// Workload group configurations to run sequentially
+    /// One or more TrafficGens are allowed per workload group
+    pub workload_groups: Vec<WorkloadGroup>,
 
     /// How long to wait before refreshing balances. A function of the execution delay and block speed
     #[serde(default = "default_refresh_delay_secs")]
@@ -55,7 +56,7 @@ pub struct Config {
 
     /// Base fee used when calculating gas costs and value
     #[serde(default = "default_base_fee_gwei")]
-    pub base_fee_gwei: u128,
+    pub base_fee_gwei: u64,
 
     /// Chain id
     #[serde(default = "default_chain_id")]
@@ -64,12 +65,12 @@ pub struct Config {
     /// Minimum native amount in wei for each sender.
     /// When a sender has less than this amount, it's native balance is topped off from a root private key
     #[serde(default = "default_min_native_amount")]
-    pub min_native_amount: u128,
+    pub min_native_amount: String,
 
     /// Native amount in wei transfered to each sender from an available root private key when the sender's
     /// native balance passes below `min_native_amount`
     #[serde(default = "default_seed_native_amount")]
-    pub seed_native_amount: u128,
+    pub seed_native_amount: String,
 
     /// Writes `DEBUG` logs to ./debug.log
     #[serde(default = "default_debug_log_file")]
@@ -91,8 +92,8 @@ pub struct Config {
 }
 
 // Default value functions
-fn default_rpc_url() -> String {
-    "http://localhost:8545".to_string()
+fn default_rpc_url() -> Vec<String> {
+    vec!["http://localhost:8545".to_string()]
 }
 
 fn default_tps() -> u64 {
@@ -142,7 +143,7 @@ fn default_use_get_logs() -> bool {
     false
 }
 
-fn default_base_fee_gwei() -> u128 {
+fn default_base_fee_gwei() -> u64 {
     50
 }
 
@@ -150,12 +151,12 @@ fn default_chain_id() -> u64 {
     20143
 }
 
-fn default_min_native_amount() -> u128 {
-    100_000_000_000_000_000_000
+fn default_min_native_amount() -> String {
+    "100_000_000_000_000_000_000".to_string()
 }
 
-fn default_seed_native_amount() -> u128 {
-    1_000_000_000_000_000_000_000
+fn default_seed_native_amount() -> String {
+    "1_000_000_000_000_000_000_000".to_string()
 }
 
 fn default_debug_log_file() -> bool {
@@ -174,94 +175,82 @@ fn default_otel_replica_name() -> String {
     "default".to_string()
 }
 
-impl Config {
-    pub fn from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let config: Config = serde_json::from_str(&content)?;
-        Ok(config)
-    }
-
-    pub fn to_file(&self, path: &str) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
-    pub fn tx_per_sender(&self, traffic_gen: &TrafficGen) -> usize {
-        if let Some(x) = traffic_gen.tx_per_sender {
+impl TrafficGen {
+    pub fn tx_per_sender(&self) -> usize {
+        if let Some(x) = self.tx_per_sender {
             return x;
         }
-        match &traffic_gen.gen_mode {
+        match &self.gen_mode {
             GenMode::FewToMany(..) => 500,
             GenMode::ManyToMany(..) => 10,
-            GenMode::Duplicates(..) => 10,
-            GenMode::RandomPriorityFee(..) => 10,
-            GenMode::HighCallData(..) => 10,
-            GenMode::SelfDestructs(..) => 10,
-            GenMode::NonDeterministicStorage(..) => 10,
-            GenMode::StorageDeletes(..) => 10,
-            GenMode::NullGen(..) => 0,
-            GenMode::ECMul(..) => 10,
-            GenMode::Uniswap(..) => 10,
-            GenMode::HighCallDataLowGasLimit(..) => 30,
-            GenMode::ReserveBalance(..) => 1,
+            GenMode::Duplicates => 10,
+            GenMode::RandomPriorityFee => 10,
+            GenMode::HighCallData => 10,
+            GenMode::SelfDestructs => 10,
+            GenMode::NonDeterministicStorage => 10,
+            GenMode::StorageDeletes => 10,
+            GenMode::NullGen => 0,
+            GenMode::ECMul => 10,
+            GenMode::Uniswap => 10,
+            GenMode::HighCallDataLowGasLimit => 30,
+            GenMode::ReserveBalance => 1,
             GenMode::SystemSpam(..) => 500,
-            GenMode::SystemKeyNormal(..) => 500,
-            GenMode::SystemKeyNormalRandomPriorityFee(..) => 500,
+            GenMode::SystemKeyNormal => 500,
+            GenMode::SystemKeyNormalRandomPriorityFee => 500,
         }
     }
 
-    pub fn sender_group_size(&self, traffic_gen: &TrafficGen) -> usize {
-        if let Some(x) = traffic_gen.sender_group_size {
+    pub fn sender_group_size(&self) -> usize {
+        if let Some(x) = self.sender_group_size {
             return x;
         }
-        match &traffic_gen.gen_mode {
+        match &self.gen_mode {
             GenMode::FewToMany(..) => 100,
             GenMode::ManyToMany(..) => 100,
-            GenMode::Duplicates(..) => 100,
-            GenMode::RandomPriorityFee(..) => 100,
-            GenMode::NonDeterministicStorage(..) => 100,
-            GenMode::StorageDeletes(..) => 100,
-            GenMode::NullGen(..) => 10,
-            GenMode::SelfDestructs(..) => 10,
-            GenMode::HighCallData(..) => 10,
-            GenMode::ECMul(..) => 10,
-            GenMode::HighCallDataLowGasLimit(..) => 3,
-            GenMode::Uniswap(..) => 20,
-            GenMode::ReserveBalance(..) => 100,
+            GenMode::Duplicates => 100,
+            GenMode::RandomPriorityFee => 100,
+            GenMode::NonDeterministicStorage => 100,
+            GenMode::StorageDeletes => 100,
+            GenMode::NullGen => 10,
+            GenMode::SelfDestructs => 10,
+            GenMode::HighCallData => 10,
+            GenMode::ECMul => 10,
+            GenMode::HighCallDataLowGasLimit => 3,
+            GenMode::Uniswap => 20,
+            GenMode::ReserveBalance => 100,
             GenMode::SystemSpam(..) => 1,
-            GenMode::SystemKeyNormal(..) => 1,
-            GenMode::SystemKeyNormalRandomPriorityFee(..) => 1,
+            GenMode::SystemKeyNormal => 1,
+            GenMode::SystemKeyNormalRandomPriorityFee => 1,
         }
     }
 
-    pub fn senders(&self, traffic_gen: &TrafficGen) -> usize {
-        if let Some(x) = traffic_gen.senders {
+    pub fn senders(&self) -> usize {
+        if let Some(x) = self.senders {
             return x;
         }
-        match &traffic_gen.gen_mode {
+        match &self.gen_mode {
             GenMode::FewToMany(..) => 1000,
             GenMode::ManyToMany(..) => 2500,
-            GenMode::Duplicates(..) => 2500,
-            GenMode::RandomPriorityFee(..) => 2500,
-            GenMode::NonDeterministicStorage(..) => 2500,
-            GenMode::StorageDeletes(..) => 2500,
-            GenMode::NullGen(..) => 100,
-            GenMode::SelfDestructs(..) => 100,
-            GenMode::HighCallData(..) => 100,
-            GenMode::HighCallDataLowGasLimit(..) => 100,
-            GenMode::ECMul(..) => 100,
-            GenMode::Uniswap(..) => 200,
-            GenMode::ReserveBalance(..) => 2500,
+            GenMode::Duplicates => 2500,
+            GenMode::RandomPriorityFee => 2500,
+            GenMode::NonDeterministicStorage => 2500,
+            GenMode::StorageDeletes => 2500,
+            GenMode::NullGen => 100,
+            GenMode::SelfDestructs => 100,
+            GenMode::HighCallData => 100,
+            GenMode::HighCallDataLowGasLimit => 100,
+            GenMode::ECMul => 100,
+            GenMode::Uniswap => 200,
+            GenMode::ReserveBalance => 2500,
             GenMode::SystemSpam(..) => 1,
-            GenMode::SystemKeyNormal(..) => 1,
-            GenMode::SystemKeyNormalRandomPriorityFee(..) => 1,
+            GenMode::SystemKeyNormal => 1,
+            GenMode::SystemKeyNormalRandomPriorityFee => 1,
         }
     }
 
-    pub fn required_contract(&self, traffic_gen: &TrafficGen) -> RequiredContract {
+    pub fn required_contract(&self) -> RequiredContract {
         use RequiredContract::*;
-        match &traffic_gen.gen_mode {
+        match &self.gen_mode {
             GenMode::FewToMany(config) => match config.tx_type {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
@@ -270,39 +259,77 @@ impl Config {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
             },
-            GenMode::Duplicates(..) => ERC20,
-            GenMode::RandomPriorityFee(..) => ERC20,
-            GenMode::HighCallData(..) => None,
-            GenMode::HighCallDataLowGasLimit(..) => None,
-            GenMode::SelfDestructs(..) => None,
-            GenMode::NonDeterministicStorage(..) => ERC20,
-            GenMode::StorageDeletes(..) => ERC20,
-            GenMode::NullGen(..) => None,
-            GenMode::ECMul(..) => ECMUL,
-            GenMode::Uniswap(..) => Uniswap,
-            GenMode::ReserveBalance(..) => None,
+            GenMode::Duplicates => ERC20,
+            GenMode::RandomPriorityFee => ERC20,
+            GenMode::HighCallData => None,
+            GenMode::HighCallDataLowGasLimit => None,
+            GenMode::SelfDestructs => None,
+            GenMode::NonDeterministicStorage => ERC20,
+            GenMode::StorageDeletes => ERC20,
+            GenMode::NullGen => None,
+            GenMode::ECMul => ECMUL,
+            GenMode::Uniswap => Uniswap,
+            GenMode::ReserveBalance => None,
             GenMode::SystemSpam(..) => None,
-            GenMode::SystemKeyNormal(..) => None,
-            GenMode::SystemKeyNormalRandomPriorityFee(..) => None,
+            GenMode::SystemKeyNormal => None,
+            GenMode::SystemKeyNormalRandomPriorityFee => None,
+        }
+    }
+}
+
+impl Config {
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path.as_ref();
+
+        let content = std::fs::read_to_string(path)?;
+        if path.extension().unwrap_or_default() == "json" {
+            serde_json::from_str(&content)
+                .wrap_err_with(|| format!("Failed to parse JSON config: {}", path.display()))
+        } else {
+            toml::from_str(&content)
+                .wrap_err_with(|| format!("Failed to parse TOML config: {}", path.display()))
         }
     }
 
+    pub fn to_file(&self, path: &str) -> Result<()> {
+        let content =
+            toml::to_string_pretty(self).wrap_err("Failed to serialize config to TOML")?;
+        std::fs::write(path, content)
+            .wrap_err_with(|| format!("Failed to write config to {:?}", path))
+    }
+
     pub fn base_fee(&self) -> u128 {
-        self.base_fee_gwei
+        let base_fee_gwei = self.base_fee_gwei as u128;
+        base_fee_gwei
             .checked_mul(10u128.pow(9))
             .expect("Gwei must be convertable to wei using u128")
     }
 
-    pub fn rpc_url(&self) -> Result<Url> {
-        self.rpc_url.parse().map_err(Into::into)
+    pub fn rpc_urls(&self) -> Result<Vec<Url>> {
+        if self.rpc_urls.is_empty() {
+            bail!("No RPC URLs provided");
+        }
+
+        self.rpc_urls
+            .iter()
+            .map(|url| {
+                url.parse()
+                    .wrap_err_with(|| format!("Failed to parse RPC URL: {}", url))
+            })
+            .collect()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficGen {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkloadGroup {
     /// How long to run this traffic pattern in seconds
-    pub runtime: u64,
+    pub runtime_minutes: f64,
+    pub name: String,
+    pub traffic_gens: Vec<TrafficGen>,
+}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrafficGen {
     /// Target tps of the generator for this traffic phase
     #[serde(default = "default_tps")]
     pub tps: u64,
@@ -377,78 +404,47 @@ impl DeployedContract {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GenMode {
     FewToMany(FewToManyConfig),
     ManyToMany(ManyToManyConfig),
-    Duplicates(DuplicatesConfig),
-    RandomPriorityFee(RandomPriorityFeeConfig),
-    HighCallData(HighCallDataConfig),
-    HighCallDataLowGasLimit(HighCallDataLowGasLimitConfig),
-    SelfDestructs(SelfDestructsConfig),
-    NonDeterministicStorage(NonDeterministicStorageConfig),
-    StorageDeletes(StorageDeletesConfig),
-    NullGen(NullGenConfig),
-    ECMul(ECMulConfig),
-    Uniswap(UniswapConfig),
-    ReserveBalance(ReserveBalanceConfig),
+    Duplicates,
+    RandomPriorityFee,
+    HighCallData,
+    HighCallDataLowGasLimit,
+    SelfDestructs,
+    NonDeterministicStorage,
+    StorageDeletes,
+    NullGen,
+    #[serde(rename = "ecmul")]
+    ECMul,
+    #[serde(rename = "uniswap")]
+    Uniswap,
+    ReserveBalance,
     SystemSpam(SystemSpamConfig),
-    SystemKeyNormal(SystemKeyNormalConfig),
-    SystemKeyNormalRandomPriorityFee(SystemKeyNormalRandomPriorityFeeConfig),
+    SystemKeyNormal,
+    SystemKeyNormalRandomPriorityFee,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FewToManyConfig {
     #[serde(default = "default_tx_type")]
     pub tx_type: TxType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManyToManyConfig {
     #[serde(default = "default_tx_type")]
     pub tx_type: TxType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DuplicatesConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RandomPriorityFeeConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HighCallDataConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HighCallDataLowGasLimitConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SelfDestructsConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NonDeterministicStorageConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StorageDeletesConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NullGenConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ECMulConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UniswapConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReserveBalanceConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SystemSpamConfig {
     pub call_type: SystemCallType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemCallType {
     Reward,
@@ -456,17 +452,11 @@ pub enum SystemCallType {
     EpochChange,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemKeyNormalConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemKeyNormalRandomPriorityFeeConfig {}
-
 fn default_tx_type() -> TxType {
     TxType::ERC20
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, Serialize)]
+#[derive(Deserialize, Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub enum TxType {
     #[serde(rename = "erc20")]
     ERC20,
@@ -483,5 +473,63 @@ impl FromStr for TxType {
             "native" => Ok(TxType::Native),
             _ => Err(eyre::eyre!("Invalid TxType: {}", s)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tx_type_from_str() {
+        assert_eq!(TxType::from_str("erc20").unwrap(), TxType::ERC20);
+        assert_eq!(TxType::from_str("native").unwrap(), TxType::Native);
+    }
+
+    #[test]
+    fn load_sample_configs() {
+        let config =
+            Config::from_file("examples/txgen/sample_configs/sequential_phases.json").unwrap();
+        assert_eq!(config.rpc_urls.len(), 2);
+        assert_eq!(config.rpc_urls[0], "http://localhost:33332");
+        assert_eq!(config.rpc_urls[1], "http://localhost:8080");
+
+        assert_eq!(config.workload_groups.len(), 3);
+        assert_eq!(
+            config.workload_groups[0].traffic_gens[0].gen_mode,
+            GenMode::FewToMany(FewToManyConfig {
+                tx_type: TxType::ERC20,
+            })
+        );
+        assert_eq!(
+            config.workload_groups[1].traffic_gens[0].gen_mode,
+            GenMode::NonDeterministicStorage
+        );
+        assert_eq!(
+            config.workload_groups[2].traffic_gens[0].gen_mode,
+            GenMode::Duplicates
+        );
+
+        // Check that the toml config parses
+        let content =
+            std::fs::read_to_string("examples/txgen/sample_configs/sequential_phases.toml")
+                .unwrap();
+        let toml_config: Config = toml::from_str(&content).unwrap();
+
+        // Check that the toml config matches the json config
+        // We do this per workload group since one large assert is hard to debug if it fails
+        for idx in 0..3 {
+            assert_eq!(
+                toml_config.workload_groups[idx].traffic_gens[0].gen_mode,
+                config.workload_groups[idx].traffic_gens[0].gen_mode
+            );
+
+            assert_eq!(
+                toml_config.workload_groups[idx],
+                config.workload_groups[idx]
+            );
+        }
+
+        assert_eq!(toml_config, config);
     }
 }
