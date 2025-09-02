@@ -114,10 +114,11 @@ pub fn make_generator(
             recipient_keys,
             num_drain_txs: 2,
         }),
-        GenMode::SystemSpam(_) => Box::new(SystemTransactionSpamGenerator {
+        GenMode::SystemSpam(config) => Box::new(SystemTransactionSpamGenerator {
             recipient_keys,
             tx_per_sender,
             system_nonce: 0,
+            call_type: config.call_type.clone(),
         }),
         GenMode::SystemKeyNormal(_) => Box::new(SystemKeyNormalTxGenerator {
             recipient_keys,
