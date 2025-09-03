@@ -26,7 +26,7 @@ use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::warn;
+use tracing::{info, warn};
 
 pub struct EthTxPoolIpcStream {
     // It's really ugly to emulate Sink for a Framed<UnixStream, ...> in a sync
@@ -65,14 +65,19 @@ impl EthTxPoolIpcStream {
 
         stream.send(snapshot_bytes.into()).await?;
 
+        info!("[andre-debug] ipc sent snapshot");
+
         loop {
             tokio::select! {
                 result = stream.next() => {
+                    info!("[andre-debug] ipc received stream msg from rpc {result:?}");
+
                     let Some(result) = result else {
                         break;
                     };
 
                     let Ok(tx) = alloy_rlp::decode_exact::<TxEnvelope>(result?.as_ref()) else {
+                        info!("[andre-debug] ipc bad rlp encoded, silent error?");
                         return Err(io::Error::new(
                             ErrorKind::InvalidData,
                             "EthTxPoolIpcStream received invalid tx serialized bytes!"
@@ -82,6 +87,8 @@ impl EthTxPoolIpcStream {
                     let Err(error) = tx_sender.try_send(tx) else {
                         continue;
                     };
+
+                    info!("[andre-debug] ipc try send error {error:?}");
 
                     match error {
                         mpsc::error::TrySendError::Full(_) => {
@@ -94,6 +101,8 @@ impl EthTxPoolIpcStream {
                 }
 
                 result = event_rx.recv() => {
+                    info!("[andre-debug] ipc received event from txp[ool {result:?}");
+
                     let Some(events) = result else {
                         break;
                     };
@@ -104,6 +113,8 @@ impl EthTxPoolIpcStream {
                 }
             }
         }
+
+        info!("[andre-debug] ipc closing gracefully");
 
         Ok(())
     }

@@ -29,7 +29,7 @@ use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use state::TxStatusSender;
 use tokio::pin;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub use self::{client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle, types::TxStatus};
 use self::{
@@ -103,12 +103,16 @@ impl EthTxPoolBridge {
         let err = loop {
             tokio::select! {
                 result = tx_receiver.recv_async() => {
+                    info!("[andre-debug] tx receiver result: {result:?}");
+
                     let tx_pair = match result {
                         Ok(tx_pair) => tx_pair,
                         Err(e) => break e,
                     };
 
                     for (tx, tx_status_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
+                        info!("[andre-debug] adding tx {tx:?}");
+
                         self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_send);
 
                         if let Err(e) = self.feed(&tx).await {
@@ -122,6 +126,8 @@ impl EthTxPoolBridge {
                 }
 
                 result = self.next() => {
+                    info!("[andre-debug] event {result:?}");
+
                     let Some(events) = result else {
                         continue;
                     };
