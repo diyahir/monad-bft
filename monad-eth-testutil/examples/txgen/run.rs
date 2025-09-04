@@ -29,7 +29,9 @@ use crate::{
     config::{Config, DeployedContract, TrafficGen},
     generators::make_generator,
     prelude::*,
-    shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap},
+    shared::{
+        ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
+    },
 };
 
 pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
@@ -275,6 +277,7 @@ struct DeployedContractFile {
     erc20: Option<Address>,
     ecmul: Option<Address>,
     uniswap: Option<Address>,
+    eip7702: Option<Address>,
 }
 
 async fn load_or_deploy_contracts(
@@ -320,6 +323,7 @@ async fn load_or_deploy_contracts(
                 erc20: Some(erc20.addr),
                 ecmul: None,
                 uniswap: None,
+                eip7702: None,
             };
 
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
@@ -349,6 +353,7 @@ async fn load_or_deploy_contracts(
                 erc20: None,
                 ecmul: Some(ecmul.addr),
                 uniswap: None,
+                eip7702: None,
             };
 
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
@@ -379,10 +384,42 @@ async fn load_or_deploy_contracts(
                 erc20: None,
                 ecmul: None,
                 uniswap: Some(uniswap.addr),
+                eip7702: None,
             };
 
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
             Ok(DeployedContract::Uniswap(uniswap))
+        }
+        RequiredContract::EIP7702 => {
+            match open_deployed_contracts_file(path) {
+                Ok(DeployedContractFile {
+                    eip7702: Some(eip7702),
+                    ..
+                }) => {
+                    if verify_contract_code(client, eip7702).await? {
+                        info!("Contract loaded from file validated");
+                        return Ok(DeployedContract::EIP7702(EIP7702 { addr: eip7702 }));
+                    }
+                    warn!(
+                        "Contract loaded from file not found on chain, deploying new contract..."
+                    );
+                }
+                Err(e) => info!("Failed to load deployed contracts file, {e}"),
+                _ => info!("Contract not in deployed contracts file"),
+            }
+
+            // if not found, deploy new contract
+            let eip7702 = EIP7702::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+
+            let deployed = DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: None,
+                eip7702: Some(eip7702.addr),
+            };
+
+            write_and_verify_deployed_contracts(client, path, &deployed).await?;
+            Ok(DeployedContract::EIP7702(eip7702))
         }
     }
 }
@@ -407,6 +444,16 @@ async fn write_and_verify_deployed_contracts(
         }
     }
     if let Some(addr) = dc.ecmul {
+        if !verify_contract_code(client, addr).await? {
+            bail!("Failed to verify freshly deployed contract");
+        }
+    }
+    if let Some(addr) = dc.uniswap {
+        if !verify_contract_code(client, addr).await? {
+            bail!("Failed to verify freshly deployed contract");
+        }
+    }
+    if let Some(addr) = dc.eip7702 {
         if !verify_contract_code(client, addr).await? {
             bail!("Failed to verify freshly deployed contract");
         }

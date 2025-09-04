@@ -17,6 +17,7 @@ use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_primitives::TxKind;
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
+use eip7702::EIP7702Generator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
@@ -46,6 +47,8 @@ mod storage_deletes;
 mod system_key_normal;
 mod system_spam;
 mod uniswap;
+
+mod eip7702;
 
 pub fn make_generator(
     config: &Config,
@@ -132,6 +135,10 @@ pub fn make_generator(
             system_nonce: 0,
             random_priority_fee: true,
         }),
+        GenMode::EIP7702(_) => Box::new(EIP7702Generator::new(
+            deployed_contract.eip7702()?,
+            tx_per_sender,
+        )),
     })
 }
 
