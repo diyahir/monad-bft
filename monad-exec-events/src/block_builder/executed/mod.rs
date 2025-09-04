@@ -492,7 +492,6 @@ mod test {
         run_block_builder(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES);
     }
 
-    #[ignore]
     #[test]
     fn basic_test_monad_testnet() {
         const SNAPSHOT_NAME: &str = "MONAD_DEVNET_500B_GENESIS";
