@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::{
     prelude::*,
-    shared::{ecmul::ECMul, erc20::ERC20, uniswap::Uniswap},
+    shared::{ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, uniswap::Uniswap},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +208,7 @@ impl Config {
             GenMode::SystemSpam(..) => 500,
             GenMode::SystemKeyNormal(..) => 500,
             GenMode::SystemKeyNormalRandomPriorityFee(..) => 500,
+            GenMode::EIP7702(..) => 10,
         }
     }
 
@@ -232,6 +233,7 @@ impl Config {
             GenMode::SystemSpam(..) => 1,
             GenMode::SystemKeyNormal(..) => 1,
             GenMode::SystemKeyNormalRandomPriorityFee(..) => 1,
+            GenMode::EIP7702(..) => 10,
         }
     }
 
@@ -256,6 +258,7 @@ impl Config {
             GenMode::SystemSpam(..) => 1,
             GenMode::SystemKeyNormal(..) => 1,
             GenMode::SystemKeyNormalRandomPriorityFee(..) => 1,
+            GenMode::EIP7702(..) => 100,
         }
     }
 
@@ -284,6 +287,7 @@ impl Config {
             GenMode::SystemSpam(..) => None,
             GenMode::SystemKeyNormal(..) => None,
             GenMode::SystemKeyNormalRandomPriorityFee(..) => None,
+            GenMode::EIP7702(..) => EIP7702,
         }
     }
 
@@ -344,6 +348,7 @@ pub enum RequiredContract {
     ERC20,
     ECMUL,
     Uniswap,
+    EIP7702,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +357,7 @@ pub enum DeployedContract {
     ERC20(ERC20),
     ECMUL(ECMul),
     Uniswap(Uniswap),
+    EIP7702(EIP7702),
 }
 
 impl DeployedContract {
@@ -375,6 +381,13 @@ impl DeployedContract {
             _ => bail!("Expected uniswap, found {:?}", &self),
         }
     }
+
+    pub fn eip7702(self) -> Result<EIP7702> {
+        match self {
+            Self::EIP7702(batch_call) => Ok(batch_call),
+            _ => bail!("Expected eip7702, found {:?}", &self),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,6 +409,7 @@ pub enum GenMode {
     SystemSpam(SystemSpamConfig),
     SystemKeyNormal(SystemKeyNormalConfig),
     SystemKeyNormalRandomPriorityFee(SystemKeyNormalRandomPriorityFeeConfig),
+    EIP7702(EIP7702Config),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -461,6 +475,9 @@ pub struct SystemKeyNormalConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemKeyNormalRandomPriorityFeeConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EIP7702Config {}
 
 fn default_tx_type() -> TxType {
     TxType::ERC20

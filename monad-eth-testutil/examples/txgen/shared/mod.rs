@@ -20,3 +20,5 @@ pub mod eth_json_rpc;
 pub mod key_pool;
 pub mod private_key;
 pub mod uniswap;
+
+pub mod eip7702;
