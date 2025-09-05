@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![allow(async_fn_in_trait)]
+#![allow(async_fn_in_trait, clippy::too_many_arguments)]
 
 use std::env;
 
@@ -22,6 +22,7 @@ use clap::Parser;
 use prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 
+pub mod cli;
 pub mod config;
 pub mod generators;
 pub mod prelude;
@@ -29,18 +30,14 @@ pub mod run;
 pub mod shared;
 pub mod workers;
 
-#[derive(Debug, Parser)]
-#[command(name = "txgen", about, long_about = None)]
-pub struct CliConfig {
-    #[arg(long, short)]
-    pub config_file: String,
-}
-
 #[tokio::main]
 async fn main() {
-    let cli_config = CliConfig::parse();
-    let config =
-        config::Config::from_file(&cli_config.config_file).expect("Failed to load configuration");
+    let cli_config = cli::CliConfig::parse();
+    let config = if let Some(config_file) = cli_config.config_file {
+        config::Config::from_file(&config_file).expect("Failed to load configuration")
+    } else {
+        cli_config.into()
+    };
 
     if let Err(e) = setup_logging(config.trace_log_file, config.debug_log_file) {
         error!("Error setting up logging: {e:?}");

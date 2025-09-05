@@ -29,7 +29,7 @@ use system_spam::SystemTransactionSpamGenerator;
 use uniswap::UniswapGenerator;
 
 use crate::{
-    config::{Config, DeployedContract, GenMode},
+    config::{DeployedContract, GenMode},
     prelude::*,
     shared::erc20::ERC20,
 };
@@ -48,7 +48,6 @@ mod system_spam;
 mod uniswap;
 
 pub fn make_generator(
-    config: &Config,
     traffic_gen: &TrafficGen,
     deployed_contract: DeployedContract,
 ) -> Result<Box<dyn Generator + Send + Sync>> {

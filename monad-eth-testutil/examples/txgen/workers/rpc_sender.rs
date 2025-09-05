@@ -239,7 +239,6 @@ impl RpcSender {
 
         let metrics = self.metrics.clone();
         let sent_txs = self.sent_txs.clone();
-        let shutdown = self.shutdown.clone();
         let batch = Vec::from_iter(batch.iter().cloned()); // todo: make more performant
 
         tokio::spawn(async move {

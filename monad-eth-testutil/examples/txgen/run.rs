@@ -197,7 +197,7 @@ fn run_traffic_gen(
         }
     });
 
-    let generator = make_generator(config, traffic_gen, deployed_contract.clone())?;
+    let generator = make_generator(traffic_gen, deployed_contract.clone())?;
     let gen = GeneratorHarness::new(
         generator,
         refresh_rx,

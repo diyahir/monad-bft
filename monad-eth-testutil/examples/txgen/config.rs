@@ -25,12 +25,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Config {
-    #[serde(default = "default_rpc_url")]
+    #[serde(default)]
     pub rpc_urls: Vec<String>,
 
     /// Funded private keys used to seed native tokens to sender accounts
-    #[serde(default = "default_root_private_keys")]
     pub root_private_keys: Vec<String>,
 
     /// Workload group configurations to run sequentially
@@ -38,141 +38,75 @@ pub struct Config {
     pub workload_groups: Vec<WorkloadGroup>,
 
     /// How long to wait before refreshing balances. A function of the execution delay and block speed
-    #[serde(default = "default_refresh_delay_secs")]
     pub refresh_delay_secs: f64,
 
     /// Queries rpc for receipts of each sent tx when set. Queries per txhash, prefer `use_receipts_by_block` for efficiency
-    #[serde(default = "default_use_receipts")]
     pub use_receipts: bool,
 
     /// Queries rpc for receipts for each committed block and filters against txs sent by this txgen.
     /// More efficient
-    #[serde(default = "default_use_receipts_by_block")]
     pub use_receipts_by_block: bool,
 
     /// Fetches logs for each tx sent
-    #[serde(default = "default_use_get_logs")]
     pub use_get_logs: bool,
 
     /// Base fee used when calculating gas costs and value
-    #[serde(default = "default_base_fee_gwei")]
     pub base_fee_gwei: u64,
 
     /// Chain id
-    #[serde(default = "default_chain_id")]
     pub chain_id: u64,
 
     /// Minimum native amount in wei for each sender.
     /// When a sender has less than this amount, it's native balance is topped off from a root private key
-    #[serde(default = "default_min_native_amount")]
     pub min_native_amount: String,
 
     /// Native amount in wei transfered to each sender from an available root private key when the sender's
     /// native balance passes below `min_native_amount`
-    #[serde(default = "default_seed_native_amount")]
     pub seed_native_amount: String,
 
     /// Writes `DEBUG` logs to ./debug.log
-    #[serde(default = "default_debug_log_file")]
     pub debug_log_file: bool,
 
     /// Writes `TRACE` logs to ./trace.log
-    #[serde(default = "default_trace_log_file")]
     pub trace_log_file: bool,
 
-    #[serde(default = "default_use_static_tps_interval")]
     pub use_static_tps_interval: bool,
 
     /// Otel endpoint
     pub otel_endpoint: Option<String>,
 
     /// Otel replica name
-    #[serde(default = "default_otel_replica_name")]
     pub otel_replica_name: String,
 }
 
-// Default value functions
-fn default_rpc_url() -> Vec<String> {
-    vec!["http://localhost:8545".to_string()]
-}
-
-fn default_tps() -> u64 {
-    1000
-}
-
-fn default_root_private_keys() -> Vec<String> {
-    vec![
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
-        "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a".to_string(),
-        "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6".to_string(),
-        "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a".to_string(),
-        "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba".to_string(),
-    ]
-}
-
-fn default_recipient_seed() -> u64 {
-    10101
-}
-
-fn default_sender_seed() -> u64 {
-    10101
-}
-
-fn default_recipients() -> usize {
-    100000
-}
-
-fn default_refresh_delay_secs() -> f64 {
-    5.0
-}
-
-fn default_erc20_balance_of() -> bool {
-    false
-}
-
-fn default_use_receipts() -> bool {
-    false
-}
-
-fn default_use_receipts_by_block() -> bool {
-    false
-}
-
-fn default_use_get_logs() -> bool {
-    false
-}
-
-fn default_base_fee_gwei() -> u64 {
-    50
-}
-
-fn default_chain_id() -> u64 {
-    20143
-}
-
-fn default_min_native_amount() -> String {
-    "100_000_000_000_000_000_000".to_string()
-}
-
-fn default_seed_native_amount() -> String {
-    "1_000_000_000_000_000_000_000".to_string()
-}
-
-fn default_debug_log_file() -> bool {
-    false
-}
-
-fn default_trace_log_file() -> bool {
-    false
-}
-
-fn default_use_static_tps_interval() -> bool {
-    false
-}
-
-fn default_otel_replica_name() -> String {
-    "default".to_string()
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            rpc_urls: vec!["http://localhost:8545".to_string()],
+            root_private_keys: vec![
+                "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
+                "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
+                "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a".to_string(),
+                "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6".to_string(),
+                "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a".to_string(),
+                "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba".to_string(),
+            ],
+            workload_groups: vec![],
+            refresh_delay_secs: 5.0,
+            use_receipts: false,
+            use_receipts_by_block: false,
+            use_get_logs: false,
+            base_fee_gwei: 50,
+            chain_id: 20143,
+            min_native_amount: "100_000_000_000_000_000_000".to_string(),
+            seed_native_amount: "1_000_000_000_000_000_000_000".to_string(),
+            debug_log_file: false,
+            trace_log_file: false,
+            use_static_tps_interval: false,
+            otel_endpoint: None,
+            otel_replica_name: "default".to_string(),
+        }
+    }
 }
 
 impl TrafficGen {
@@ -328,23 +262,30 @@ pub struct WorkloadGroup {
     pub traffic_gens: Vec<TrafficGen>,
 }
 
+impl Default for WorkloadGroup {
+    fn default() -> Self {
+        Self {
+            runtime_minutes: 10.0,
+            name: "default".to_string(),
+            traffic_gens: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct TrafficGen {
     /// Target tps of the generator for this traffic phase
-    #[serde(default = "default_tps")]
     pub tps: u64,
 
     /// Seed used to generate private keys for recipients
-    #[serde(default = "default_recipient_seed")]
     pub recipient_seed: u64,
 
     /// Seed used to generate private keys for senders.
     /// If set the same as recipient seed, the accounts will be the same
-    #[serde(default = "default_sender_seed")]
     pub sender_seed: u64,
 
     /// Number of recipient accounts to generate and cycle between
-    #[serde(default = "default_recipients")]
     pub recipients: usize,
 
     /// Number of sender accounts to generate and cycle sending from
@@ -352,7 +293,6 @@ pub struct TrafficGen {
 
     /// Should the txgen query for erc20 balances
     /// This introduces many eth_calls which can affect performance and are not strictly needed for the gen to function
-    #[serde(default = "default_erc20_balance_of")]
     pub erc20_balance_of: bool,
 
     /// Which generation mode to use. Corresponds to Generator impls
@@ -364,6 +304,24 @@ pub struct TrafficGen {
     /// How many txs should be generated per sender per cycle.
     /// Or put another way, how many txs should be generated before refreshing the nonce from chain state
     pub tx_per_sender: Option<usize>,
+}
+
+impl Default for TrafficGen {
+    fn default() -> Self {
+        Self {
+            tps: 1000,
+            recipient_seed: 10101,
+            sender_seed: 10101,
+            recipients: 100000,
+            senders: None,
+            erc20_balance_of: false,
+            gen_mode: GenMode::FewToMany(FewToManyConfig {
+                tx_type: TxType::ERC20,
+            }),
+            sender_group_size: None,
+            tx_per_sender: None,
+        }
+    }
 }
 
 pub enum RequiredContract {
@@ -456,7 +414,7 @@ fn default_tx_type() -> TxType {
     TxType::ERC20
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Deserialize, Clone, Copy, Debug, Serialize, PartialEq, Eq, clap::ValueEnum)]
 pub enum TxType {
     #[serde(rename = "erc20")]
     ERC20,
