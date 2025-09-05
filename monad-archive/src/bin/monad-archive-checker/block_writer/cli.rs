@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-#[command(name = "monad-archive", about, long_about = None)]
-pub struct Cli {
+pub struct BlockWriterArgs {
     /// S3 bucket name for storing checker state
     #[arg(long)]
     pub bucket: String,

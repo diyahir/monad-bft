@@ -16,6 +16,8 @@
 use clap::{Parser, Subcommand};
 use monad_archive::cli::ArchiveArgs;
 
+use crate::block_writer::cli::BlockWriterArgs;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "monad-archive-checker",
@@ -72,6 +74,8 @@ pub enum Mode {
     FaultFixer(FaultFixerArgs),
     /// Inspects and analyzes fault data
     Inspector(InspectorArgs),
+    /// Writes blocks to a directory for execution replay
+    BlockWriter(BlockWriterArgs),
 }
 
 #[derive(Parser, Debug)]

@@ -1,36 +1,23 @@
-use clap::Parser;
-use monad_archive::prelude::*;
-use tracing::Level;
-use futures::future::join_all;
-use tokio::{
-    fs,
-    sync::Semaphore,
-};
 use std::sync::Arc;
 
 use alloy_rlp::Encodable;
+use clap::Parser;
+use futures::future::join_all;
+use monad_archive::prelude::*;
+use tokio::{fs, sync::Semaphore};
+use tracing::Level;
 
-mod cli;
+pub mod cli;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-
-    let args = cli::Cli::parse();
-    info!(?args, "Cli Arguments: ");
-
+pub async fn main(args: cli::BlockWriterArgs) -> Result<()> {
     // set concurrency level to 25
     let concurrent_block_semaphore = Arc::new(Semaphore::new(50));
 
     let url = "https://abc.com"; // dummy proxy url
     let api_key = "";
-    let aws_reader = ArchiveReader::init_aws_reader(
-        args.bucket.clone(),
-        args.region.clone(),
-        url,
-        api_key,
-        1
-    ).await?;
+    let aws_reader =
+        ArchiveReader::init_aws_reader(args.bucket.clone(), args.region.clone(), url, api_key, 1)
+            .await?;
 
     let aws_reader = Arc::new(aws_reader);
 
@@ -46,7 +33,10 @@ async fn main() -> Result<()> {
                 .acquire()
                 .await
                 .expect("Got permit to execute a new block");
-            let block_result = aws_reader.get_block_by_number(current_block).await.wrap_err("Failed to get blocks from archiver");
+            let block_result = aws_reader
+                .get_block_by_number(current_block)
+                .await
+                .wrap_err("Failed to get blocks from archiver");
             match block_result {
                 Ok(block) => {
                     // info!("Block {current_block} is: {:?}", block);
@@ -54,9 +44,10 @@ async fn main() -> Result<()> {
                     block.encode(&mut block_rlp);
 
                     let output_path = dest_path.join(current_block.to_string());
-                    let write_result = fs::write(&output_path, &block_rlp).
-                                                            await.wrap_err("Failed to write to file");
-                    
+                    let write_result = fs::write(&output_path, &block_rlp)
+                        .await
+                        .wrap_err("Failed to write to file");
+
                     match write_result {
                         Ok(()) => {
                             info!("Wrote block {} to {:?}", current_block, output_path);
@@ -65,7 +56,6 @@ async fn main() -> Result<()> {
                             error!("Error in writing file: {:?}", e);
                         }
                     }
-                    
                 }
                 Err(e) => {
                     error!("Error in aws reader {:?}", e)

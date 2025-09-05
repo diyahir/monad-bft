@@ -25,6 +25,7 @@ use model::CheckerModel;
 use monad_archive::{cli::get_aws_config, prelude::*};
 use tracing_subscriber::EnvFilter;
 
+mod block_writer;
 mod checker;
 mod cli;
 mod fault_fixer;
@@ -200,6 +201,10 @@ async fn main() -> Result<()> {
                     inspector::inspect_block(&model, block_num, format, raw).await?;
                 }
             }
+        }
+        cli::Mode::BlockWriter(block_writer_args) => {
+            info!("Starting in block writer mode");
+            block_writer::main(block_writer_args).await?;
         }
     }
 
