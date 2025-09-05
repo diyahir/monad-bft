@@ -73,9 +73,6 @@ async fn run_workload_group(
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
 
-    let (gen_sender, refresh_rx) = async_channel::bounded::<Accounts>(100);
-    let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
-
     // shared state for monitoring
     let metrics = Arc::new(Metrics::default());
     let sent_txs = Arc::new(DashMap::with_capacity(100_000));
@@ -89,24 +86,17 @@ async fn run_workload_group(
         let deployed_contract = load_or_deploy_contracts(config, traffic_gen, &read_client).await?;
         deployed_contracts.push(deployed_contract.clone());
 
-        run_traffic_gen(
+        tasks.extend(run_traffic_gen(
             clients,
             config,
+            workload_group,
             traffic_gen,
-            refresh_sender.clone(),
-            refresh_rx.clone(),
             &shutdown,
-            &mut tasks,
             metrics.clone(),
             deployed_contract,
             sent_txs.clone(),
-        )?;
+        )?);
     }
-
-    let refresh_erc20_balance = workload_group
-        .traffic_gens
-        .iter()
-        .any(|tg| tg.erc20_balance_of);
 
     // setup metrics and monitoring
     let committed_tx_watcher = CommittedTxWatcher::new(
@@ -119,17 +109,6 @@ async fn run_workload_group(
     .await;
 
     // Refresher is a primary worker
-    let refresher = Refresher::new(
-        rpc_rx,
-        gen_sender,
-        read_client,
-        Arc::clone(&metrics),
-        Duration::from_secs_f64(config.refresh_delay_secs),
-        deployed_contracts,
-        refresh_erc20_balance,
-        workload_group.name.clone(),
-        Arc::clone(&shutdown),
-    )?;
 
     let metrics_reporter = MetricsReporter::new(
         metrics.clone(),
@@ -137,9 +116,6 @@ async fn run_workload_group(
         config.otel_replica_name.clone(),
         workload_group.name.clone(),
     )?;
-
-    // abort if critical task stops
-    tasks.push(critical_task("Refresher", tokio::spawn(refresher.run())).boxed());
 
     // continue working if helper task stops
     tasks.push(
@@ -196,17 +172,18 @@ async fn run_workload_group(
 fn run_traffic_gen(
     clients: &[ReqwestClient],
     config: &Config,
+    workload_group: &WorkloadGroup,
     traffic_gen: &TrafficGen,
-    refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
-    refresh_rx: async_channel::Receiver<Accounts>,
     shutdown: &Arc<AtomicBool>,
-    tasks: &mut FuturesUnordered<Pin<Box<dyn Future<Output = Result<()>> + Send>>>,
     metrics: Arc<Metrics>,
     deployed_contract: DeployedContract,
     sent_txs: Arc<DashMap<TxHash, Instant>>,
-) -> Result<()> {
-    // let (gen_sender, refresh_rx) = mpsc::channel(100);
+) -> Result<impl Iterator<Item = Pin<Box<dyn Future<Output = Result<()>> + Send>>>> {
     let read_client = clients[0].clone();
+
+    let (rpc_sender, gen_rx) = mpsc::channel(2);
+    let (gen_sender, refresh_rx) = async_channel::bounded::<Accounts>(100);
+    let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
 
     // kick start cycle by injecting accounts
     generate_sender_groups(config, traffic_gen).for_each(|group| {
@@ -219,9 +196,7 @@ fn run_traffic_gen(
         }
     });
 
-    let (rpc_sender, gen_rx) = mpsc::channel(2);
-
-    let generator = make_generator(config, traffic_gen, deployed_contract)?;
+    let generator = make_generator(config, traffic_gen, deployed_contract.clone())?;
     let gen = GeneratorHarness::new(
         generator,
         refresh_rx,
@@ -247,11 +222,24 @@ fn run_traffic_gen(
         Arc::clone(shutdown),
     );
 
-    // Abort if critical task stops
-    tasks.push(critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed());
-    tasks.push(critical_task("Generator Harness", tokio::spawn(gen.run())).boxed());
+    let refresher = Refresher::new(
+        rpc_rx,
+        gen_sender,
+        read_client,
+        Arc::clone(&metrics),
+        Duration::from_secs_f64(config.refresh_delay_secs),
+        deployed_contract,
+        traffic_gen.erc20_balance_of,
+        workload_group.name.clone(),
+        Arc::clone(&shutdown),
+    )?;
 
-    Ok(())
+    Ok([
+        critical_task("Refresher", tokio::spawn(refresher.run())).boxed(),
+        critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed(),
+        critical_task("Generator Harness", tokio::spawn(gen.run())).boxed(),
+    ]
+    .into_iter())
 }
 
 async fn helper_task(
