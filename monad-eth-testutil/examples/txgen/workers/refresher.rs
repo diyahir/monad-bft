@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Mutex;
+
 use tokio::time::MissedTickBehavior;
 
 use super::*;
@@ -25,6 +27,7 @@ pub struct Refresher {
     pub client: ReqwestClient,
     pub metrics: Arc<Metrics>,
     pub erc20: Option<ERC20>,
+    pub base_fee: Arc<Mutex<u128>>,
 
     pub delay: Duration,
 }
@@ -36,6 +39,7 @@ impl Refresher {
 
         client: ReqwestClient,
         metrics: Arc<Metrics>,
+        base_fee: Arc<Mutex<u128>>,
 
         delay: Duration,
 
@@ -52,6 +56,7 @@ impl Refresher {
             gen_sender,
             client,
             metrics,
+            base_fee,
             delay,
             erc20,
         })
@@ -84,11 +89,13 @@ impl Refresher {
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
         let deployed_erc20 = self.erc20;
-
+        let base_fee = self.base_fee.clone();
         tokio::spawn(async move {
             let mut times_sent = 0;
 
-            while let Err(e) = refresh_batch(&client, &mut accts, &metrics, deployed_erc20).await {
+            while let Err(e) =
+                refresh_batch(&client, &mut accts, &metrics, deployed_erc20, &base_fee).await
+            {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
                 } else {
@@ -113,11 +120,18 @@ pub async fn refresh_batch(
     accts: &mut Accounts,
     metrics: &Metrics,
     deployed_erc20: Option<ERC20>,
+    base_fee: &Arc<Mutex<u128>>,
 ) -> Result<()> {
     trace!("Refreshing batch...");
 
     let iter = accts.iter().map(|a| &a.addr);
-    let (native_bals, nonces, erc20_bals): (_, _, Option<Result<Vec<Result<(Address, U256)>>>>) = tokio::join!(
+    let (new_gas_price, native_bals, nonces, erc20_bals): (
+        _,
+        _,
+        _,
+        Option<Result<Vec<Result<(Address, U256)>>>>,
+    ) = tokio::join!(
+        client.get_base_fee(),
         client.batch_get_balance(iter.clone()),
         client.batch_get_transaction_count(iter.clone()),
         async {
@@ -127,6 +141,20 @@ pub async fn refresh_batch(
             }
         }
     );
+
+    match new_gas_price {
+        Ok(new_gas_price) => {
+            *base_fee.lock().unwrap() = new_gas_price;
+        }
+        Err(e) => {
+            let base_fee = *base_fee.lock().unwrap();
+            error!(
+                "Failed to get gas price: {e}. Falling back to previous gas price. {} wei, {} gwei",
+                base_fee,
+                base_fee / 1_000_000_000
+            );
+        }
+    }
 
     let native_bals = native_bals?;
     let nonces = nonces?;

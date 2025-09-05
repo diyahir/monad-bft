@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{io::Write, str::FromStr};
+use std::{
+    io::Write,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use eyre::bail;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
@@ -60,6 +64,8 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         metrics: Arc::clone(&metrics),
     };
 
+    let base_fee = Arc::new(Mutex::new(config.base_fee()));
+
     // primary workers
     let generator = make_generator(&config, deployed_contract.clone())?;
     let gen = GeneratorHarness::new(
@@ -70,7 +76,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         U256::from(config.min_native_amount),
         U256::from(config.seed_native_amount),
         &metrics,
-        config.base_fee(),
+        &base_fee,
         config.chain_id,
     );
 
@@ -79,6 +85,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         gen_sender,
         client.clone(),
         Arc::clone(&metrics),
+        base_fee,
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
         config.erc20_balance_of,
