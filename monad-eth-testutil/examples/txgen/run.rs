@@ -228,12 +228,12 @@ fn run_traffic_gen(
         gen_sender,
         read_client,
         Arc::clone(&metrics),
-        base_fee.clone(),
+        base_fee,
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
         traffic_gen.erc20_balance_of,
         workload_group.name.clone(),
-        Arc::clone(&shutdown),
+        Arc::clone(shutdown),
     )?;
 
     Ok([

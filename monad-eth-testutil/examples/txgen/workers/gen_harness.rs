@@ -116,7 +116,7 @@ impl GeneratorHarness {
             let mut txs = self.generator.handle_acct_group(
                 &mut accts[seeded_idx..],
                 &GenCtx {
-                    base_fee: base_fee,
+                    base_fee,
                     chain_id: self.chain_id,
                 },
             );
@@ -133,7 +133,7 @@ impl GeneratorHarness {
                             self.seed_native_amt,
                             1000,
                             &GenCtx {
-                                base_fee: base_fee,
+                                base_fee,
                                 chain_id: self.chain_id,
                             },
                         );
