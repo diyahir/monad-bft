@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 
 use super::*;
 use crate::{config::GenMode, generators::native_transfer_priority_fee, prelude::*};
@@ -32,6 +35,15 @@ pub struct GenCtx {
     pub chain_id: u64,
 }
 
+impl GenCtx {
+    pub fn base_fee(&self) -> u128 {
+        let mut rng = rand::thread_rng();
+        let base = self.base_fee as i128;
+        let eps = rng.gen_range(-base / 100..=base / 100);
+        (base + eps).max(0) as u128
+    }
+}
+
 pub struct GeneratorHarness {
     pub generator: Box<dyn Generator + Send + Sync>,
 
@@ -43,7 +55,7 @@ pub struct GeneratorHarness {
     pub min_native: U256,
     pub seed_native_amt: U256,
     pub metrics: Arc<Metrics>,
-    pub base_fee: u128,
+    pub base_fee: Arc<Mutex<u128>>,
     pub chain_id: u64,
     pub gen_mode: GenMode,
 
@@ -59,7 +71,7 @@ impl GeneratorHarness {
         min_native: U256,
         seed_native_amt: U256,
         metrics: &Arc<Metrics>,
-        base_fee: u128,
+        base_fee: &Arc<Mutex<u128>>,
         chain_id: u64,
         gen_mode: GenMode,
         shutdown: Arc<AtomicBool>,
@@ -73,7 +85,7 @@ impl GeneratorHarness {
             min_native,
             metrics: Arc::clone(metrics),
             seed_native_amt,
-            base_fee,
+            base_fee: Arc::clone(base_fee),
             chain_id,
             gen_mode,
             shutdown,
@@ -100,10 +112,11 @@ impl GeneratorHarness {
                 a.native_bal < self.min_native
             });
 
+            let base_fee = *self.base_fee.lock().unwrap();
             let mut txs = self.generator.handle_acct_group(
                 &mut accts[seeded_idx..],
                 &GenCtx {
-                    base_fee: self.base_fee,
+                    base_fee: base_fee,
                     chain_id: self.chain_id,
                 },
             );
@@ -120,7 +133,7 @@ impl GeneratorHarness {
                             self.seed_native_amt,
                             1000,
                             &GenCtx {
-                                base_fee: self.base_fee,
+                                base_fee: base_fee,
                                 chain_id: self.chain_id,
                             },
                         );

@@ -19,7 +19,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -184,6 +184,7 @@ fn run_traffic_gen(
     let (rpc_sender, gen_rx) = mpsc::channel(2);
     let (gen_sender, refresh_rx) = async_channel::bounded::<Accounts>(100);
     let (refresh_sender, rpc_rx) = mpsc::unbounded_channel();
+    let base_fee = Arc::new(Mutex::new(config.base_fee()));
 
     // kick start cycle by injecting accounts
     generate_sender_groups(config, traffic_gen).for_each(|group| {
@@ -205,7 +206,7 @@ fn run_traffic_gen(
         U256::from_str_radix(&config.min_native_amount, 10).unwrap(),
         U256::from_str_radix(&config.seed_native_amount, 10).unwrap(),
         &metrics,
-        config.base_fee(),
+        &base_fee,
         config.chain_id,
         traffic_gen.gen_mode.clone(),
         Arc::clone(shutdown),
@@ -227,6 +228,7 @@ fn run_traffic_gen(
         gen_sender,
         read_client,
         Arc::clone(&metrics),
+        base_fee.clone(),
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
         traffic_gen.erc20_balance_of,
