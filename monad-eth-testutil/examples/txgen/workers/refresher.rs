@@ -44,17 +44,13 @@ impl Refresher {
 
         delay: Duration,
 
-        deployed_contracts: Vec<DeployedContract>,
+        deployed_contract: DeployedContract,
         refresh_erc20_balance: bool,
         workload_group_name: String,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Refresher> {
         let erc20 = if refresh_erc20_balance {
-            let Some(erc20) = deployed_contracts
-                .into_iter()
-                .filter_map(|dc| dc.erc20().ok())
-                .next()
-            else {
+            let DeployedContract::ERC20(erc20) = deployed_contract else {
                 bail!("Cannot construct Refresher: refresh_erc20_balance arg requires erc20 contract be deployed or loaded");
             };
             Some(erc20)
