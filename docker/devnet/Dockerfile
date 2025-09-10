@@ -18,7 +18,9 @@ RUN apt update && apt install -y \
   cgroup-tools \
   libstdc++-15-dev \
   gcc-15 \
-  g++-15 \
+  g++-15
+
+RUN apt update && apt install -y \
   libboost-atomic1.83.0 \
   libboost-container1.83.0 \
   libboost-fiber1.83.0 \
@@ -82,7 +84,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 FROM base AS runner-debug
 
 WORKDIR /usr/src/monad-bft
-ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
+ENV LD_LIBRARY_PATH="/usr/local/lib"
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 

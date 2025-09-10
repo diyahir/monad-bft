@@ -72,7 +72,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
 FROM base AS runner-debug
 
 WORKDIR /usr/src/monad-bft
-ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
+ENV LD_LIBRARY_PATH="/usr/local/lib"
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 
