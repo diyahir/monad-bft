@@ -66,6 +66,7 @@ pub fn static_validate_transaction(
 pub const TFM_MAX_EIP2718_ENCODED_LENGTH: usize = 384 * 1024;
 pub const TFM_MAX_GAS_LIMIT: u64 = 30_000_000;
 pub const EIP_7702_PER_EMPTY_ACCOUNT_COST: u64 = 25_000;
+pub const EIP_7702_MAX_AUTH_LIST_LENGTH: usize = 4;
 
 struct TfmValidator;
 impl TfmValidator {
@@ -204,6 +205,10 @@ impl EthPragueForkValidation {
             Some(auth_list) => {
                 if auth_list.is_empty() {
                     return Err(TransactionError::AuthorizationListEmpty);
+                }
+
+                if auth_list.len() > EIP_7702_MAX_AUTH_LIST_LENGTH {
+                    return Err(TransactionError::AuthorizationListLengthLimitExceeded);
                 }
             }
             None => return Err(TransactionError::AuthorizationListEmpty),
