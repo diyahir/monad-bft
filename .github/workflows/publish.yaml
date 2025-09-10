@@ -103,6 +103,3 @@ jobs:
           cache-from: |
             type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:buildcache
             type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:rust-cache
-          cache-to: |
-            type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:buildcache,mode=max
-            type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:rust-cache,mode=max
