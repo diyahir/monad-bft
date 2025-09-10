@@ -16,9 +16,7 @@ RUN apt update && apt install -y \
   cgroup-tools \
   libstdc++-15-dev \
   gcc-15 \
-  g++-15
-
-RUN apt update && apt install -y \
+  g++-15 \
   libboost-atomic1.83.0 \
   libboost-container1.83.0 \
   libboost-fiber1.83.0 \
@@ -26,9 +24,7 @@ RUN apt update && apt install -y \
   libboost-graph1.83.0 \
   libboost-json1.83.0 \
   libboost-regex1.83.0 \
-  libboost-stacktrace1.83.0
-
-RUN apt update && apt install -y \
+  libboost-stacktrace1.83.0 \
   libabsl-dev \
   libarchive-dev \
   libbenchmark-dev \
@@ -49,9 +45,7 @@ FROM base AS builder
 RUN apt update && apt install -y \
   cmake \
   clang \
-  libssl-dev
-
-RUN apt update && apt install -y \
+  libssl-dev \
   libboost-fiber1.83-dev \
   libboost-graph1.83-dev \
   libboost-json1.83-dev \
@@ -78,7 +72,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
 FROM base AS runner-debug
 
 WORKDIR /usr/src/monad-bft
-ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 

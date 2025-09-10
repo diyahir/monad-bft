@@ -100,5 +100,9 @@ jobs:
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure
-          cache-from: type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:buildcache
-          cache-to: type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:buildcache,mode=max
+          cache-from: |
+            type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:buildcache
+            type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:rust-cache
+          cache-to: |
+            type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:buildcache,mode=max
+            type=registry,ref=peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}:rust-cache,mode=max
