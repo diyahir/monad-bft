@@ -47,17 +47,39 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
         return None;
     };
 
-    let mut is_delegated = false;
-    let code_hash = if buf.is_empty() {
-        None
+    // after decoding mandatory fields remaining can be either string or extension list or both.
+    let (code_hash, is_delegated) = if buf.is_empty() {
+        (None, Some(false))
     } else {
-        match <[u8; 32]>::decode(&mut buf) {
+        let buf_copy = buf;
+        let code_hash = match <[u8; 32]>::decode(&mut buf) {
             Ok(x) => Some(x),
             Err(e) => {
-                warn!("rlp code_hash decode failed: {:?}", e);
-                return None;
+                if e != alloy_rlp::Error::UnexpectedList {
+                    warn!("rlp code_hash decode failed: {:?}", e);
+                    return None;
+                } else {
+                    buf = buf_copy;
+                    None
+                }
             }
-        }
+        };
+
+        let is_delegated = if buf.is_empty() {
+            None
+        } else {
+            let Ok(mut list_buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
+                warn!("rlp decode list header failed: {:?}", buf);
+                return None;
+            };
+
+            let Ok(is_delegated) = u8::decode(&mut list_buf) else {
+                warn!("rlp is_delegated decode failed: {:?}", list_buf);
+                return None;
+            };
+            Some(is_delegated != 0)
+        };
+        (code_hash, is_delegated)
     };
 
     Some(EthAccount {

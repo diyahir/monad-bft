@@ -876,12 +876,13 @@ where
                 maybe_status.map_or(
                     AccountBalanceState::new(base_max_reserve_balance),
                     |status| {
+                        let is_delegated = status.is_delegated.unwrap_or(false);
                         AccountBalanceState {
                             balance: status.balance,
                             remaining_reserve_balance: status.balance.min(base_max_reserve_balance),
                             max_reserve_balance: base_max_reserve_balance,
                             block_seqnum_of_latest_txn: base_seq_num, // most pessimistic assumption
-                            is_delegated: status.is_delegated,
+                            is_delegated,
                         }
                     },
                 )
