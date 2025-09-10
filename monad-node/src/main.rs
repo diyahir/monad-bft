@@ -252,7 +252,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
         <_ as Updater<_>>::boxed(raptor_router)
     };
 
-    let val_set_update_interval = SeqNum(10_000); // TODO configurable
+    let val_set_update_interval = SeqNum(5_000); // TODO configurable
 
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
