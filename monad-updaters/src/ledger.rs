@@ -185,6 +185,7 @@ where
                         block.get_block_round(),
                         block.get_parent_id(),
                         BTreeMap::default(), // TODO parse out txs
+                        vec![],
                     );
                     self.blocks.insert(block.get_id(), block);
                 }
