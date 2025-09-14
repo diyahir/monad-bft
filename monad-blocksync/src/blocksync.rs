@@ -617,7 +617,7 @@ where
                     debug!(
                         ?sender,
                         ?block_range,
-                        "blocksync: headers response verifcation passed"
+                        "blocksync: headers response verification passed"
                     );
 
                     // valid headers, remove entry and reset timeout
@@ -665,7 +665,7 @@ where
                     debug!(
                         ?sender,
                         ?block_range,
-                        "blocksync: headers response verifcation failed"
+                        "blocksync: headers response verification failed"
                     );
 
                     // response from ledger shouldn't fail headers verification

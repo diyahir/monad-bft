@@ -123,7 +123,7 @@ where
     PT: PubKey,
 {
     unix_ts_ms: u64,
-    author: NodeId<PT>,
+    sender: NodeId<PT>,
     app_message_hash: AppMessageHash,
     app_message_len: usize,
 }
@@ -179,7 +179,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             // Ignore chunk if self is the author
             // This can happen if a peer validator rebroadcasts a message back to self
-            if parsed_message.author == self.self_id {
+            if parsed_message.sender == self.self_id {
                 tracing::trace!(
                     app_message_hash =? parsed_message.app_message_hash,
                     encoding_symbol_id =? parsed_message.chunk_id,
@@ -212,25 +212,25 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 (true, true) => {
                     // invalid to have both primary and secondary broadcast bit set
                     debug!(
-                        ?parsed_message.author,
+                        ?parsed_message.sender,
                         "Receiving invalid message with both broadcast and secondary broadcast bit set"
                     );
                     continue;
                 }
             };
 
-            // Note: The check that parsed_message.author is valid is already
+            // Note: The check that parsed_message.sender is valid is already
             // done in iterate_rebroadcast_peers(), but we want to drop invalid
             // chunks ASAP, before changing `recently_decoded_state`.
             if let Some(broadcast_mode) = maybe_broadcast_mode {
                 if !group_map.check_source(
                     Epoch(parsed_message.epoch),
-                    &parsed_message.author,
+                    &parsed_message.sender,
                     broadcast_mode,
                 ) {
                     tracing::debug!(
                         src_addr = ?message.src_addr,
-                        author =? parsed_message.author,
+                        sender =? parsed_message.sender,
                         epoch =? parsed_message.epoch,
                         "not in raptorcast group"
                     );
@@ -252,7 +252,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 src_addr = ?message.src_addr,
                 app_message_len = ?parsed_message.app_message_len,
                 self_id =? self.self_id,
-                author =? parsed_message.author,
+                sender =? parsed_message.sender,
                 unix_ts_ms = parsed_message.unix_ts_ms,
                 app_message_hash =? parsed_message.app_message_hash,
                 encoding_symbol_id,
@@ -262,7 +262,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
             let key = MessageCacheKey {
                 unix_ts_ms: parsed_message.unix_ts_ms,
-                author: parsed_message.author,
+                sender: parsed_message.sender,
                 app_message_hash: parsed_message.app_message_hash,
                 app_message_len,
             };
@@ -273,14 +273,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     if self_hash == parsed_message.recipient_hash {
                         let maybe_targets = group_map.iterate_rebroadcast_peers(
                             Epoch(parsed_message.epoch),
-                            &parsed_message.author,
+                            &parsed_message.sender,
                             broadcast_mode,
                         );
                         if let Some(targets) = maybe_targets {
                             batch_guard.queue_broadcast(
                                 payload_start_idx,
                                 payload_end_idx,
-                                &parsed_message.author,
+                                &parsed_message.sender,
                                 || targets.cloned().collect(),
                             )
                         }
@@ -370,7 +370,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 if app_message_len > 10_000 {
                     tracing::debug!(
                         ?self_id,
-                        author =? parsed_message.author,
+                        sender =? parsed_message.sender,
                         unix_ts_ms = parsed_message.unix_ts_ms,
                         app_message_hash =? parsed_message.app_message_hash,
                         encoding_symbol_id,
@@ -396,7 +396,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 if decoded_message_hash != key.app_message_hash {
                     tracing::error!(
                         ?self_id,
-                        author =? key.author,
+                        sender =? key.sender,
                         expected_hash =? key.app_message_hash,
                         actual_hash =? decoded_message_hash,
                         "unexpected app message hash. dropping message"
@@ -414,7 +414,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     },
                 );
 
-                messages.push((parsed_message.author, decoded));
+                messages.push((parsed_message.sender, decoded));
             }
         }
 
@@ -451,7 +451,7 @@ where
         // invalid symbol length
         tracing::warn!(
             ?self_id,
-            author =? parsed_message.author,
+            sender =? parsed_message.sender,
             unix_ts_ms = parsed_message.unix_ts_ms,
             app_message_hash =? parsed_message.app_message_hash,
             encoding_symbol_id,
@@ -466,7 +466,7 @@ where
         // invalid symbol id
         tracing::warn!(
             ?self_id,
-            author =? parsed_message.author,
+            sender =? parsed_message.sender,
             unix_ts_ms = parsed_message.unix_ts_ms,
             app_message_hash =? parsed_message.app_message_hash,
             encoded_symbol_capacity,
@@ -480,7 +480,7 @@ where
         // duplicate symbol
         tracing::trace!(
             ?self_id,
-            author =? parsed_message.author,
+            sender =? parsed_message.sender,
             unix_ts_ms = parsed_message.unix_ts_ms,
             app_message_hash =? parsed_message.app_message_hash,
             encoding_symbol_id,
@@ -845,7 +845,7 @@ where
             let mut chunk_idx = 0_u16;
             // Group shuffling so chunks for small proposals aren't always assigned
             // to the same nodes, until researchers come up with something better.
-            for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
+            for node_id in group.iter_skip_self_and_sender(&self_id, rand::random::<usize>()) {
                 let start_idx: usize = num_packets * pp / total_peers;
                 pp += 1;
                 let end_idx: usize = num_packets * pp / total_peers;
@@ -969,6 +969,7 @@ where
 
                 data
             };
+
             let signature = ST::sign::<signing_domain::RaptorcastChunk>(
                 &header_with_root[SIGNATURE_SIZE..],
                 key,
@@ -1005,11 +1006,11 @@ where
 {
     pub message: Bytes,
 
-    // `author` is recovered from the public key in the chunk signature, which
+    // `sender` is recovered from the public key in the chunk signature, which
     // was signed by the validator who encoded the proposal into raptorcast.
     // This applies to both validator-to-validator and validator-to-full-node
     // raptorcasting.
-    pub author: NodeId<PT>,
+    pub sender: NodeId<PT>,
     pub epoch: u64,
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
@@ -1177,17 +1178,17 @@ where
     signed_over[..HEADER_LEN as usize].copy_from_slice(&message[..HEADER_LEN as usize]);
     signed_over[HEADER_LEN as usize..].copy_from_slice(&root);
 
-    let author = *signature_cache.try_get_or_insert(signed_over, || {
-        let author = signature
+    let sender = *signature_cache.try_get_or_insert(signed_over, || {
+        let sender = signature
             .recover_pubkey::<signing_domain::RaptorcastChunk>(&signed_over[SIGNATURE_SIZE..])
             .map_err(|_| MessageValidationError::InvalidSignature)?;
-        Ok(NodeId::new(author))
+        Ok(NodeId::new(sender))
     })?;
 
     Ok(ValidatedMessage {
         message,
 
-        author,
+        sender,
         epoch,
         unix_ts_ms,
         app_message_hash,
@@ -1220,7 +1221,7 @@ fn ensure_valid_timestamp(unix_ts_ms: u64, max_age_ms: u64) -> Result<(), Messag
 }
 
 struct BroadcastBatch<PT: PubKey> {
-    author: NodeId<PT>,
+    sender: NodeId<PT>,
     targets: Vec<NodeId<PT>>,
 
     start_idx: usize,
@@ -1276,7 +1277,7 @@ where
         if let Some(batch) = self.batch.take() {
             tracing::trace!(
                 self_id =? self.self_id,
-                author =? batch.author,
+                sender =? batch.sender,
                 num_targets = batch.targets.len(),
                 num_bytes = batch.end_idx - batch.start_idx,
                 "rebroadcasting chunks"
@@ -1308,7 +1309,7 @@ where
         &mut self,
         payload_start_idx: usize,
         payload_end_idx: usize,
-        author: &NodeId<PT>,
+        sender: &NodeId<PT>,
         targets: impl FnOnce() -> Vec<NodeId<PT>>,
     ) {
         self.flush_batch = false;
@@ -1316,7 +1317,7 @@ where
             .batcher
             .batch
             .as_ref()
-            .is_some_and(|batch| &batch.author == author)
+            .is_some_and(|batch| &batch.sender == sender)
         {
             let batch = self.batcher.batch.as_mut().unwrap();
             assert_eq!(batch.end_idx, payload_start_idx);
@@ -1324,7 +1325,7 @@ where
         } else {
             self.batcher.flush();
             self.batcher.batch = Some(BroadcastBatch {
-                author: *author,
+                sender: *sender,
                 targets: targets(),
 
                 start_idx: payload_start_idx,
@@ -1450,7 +1451,7 @@ mod tests {
                 assert_eq!(parsed_message.unix_ts_ms, UNIX_TS_MS);
                 assert!(parsed_message.broadcast);
                 assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
-                assert_eq!(parsed_message.author, NodeId::new(key.pubkey()));
+                assert_eq!(parsed_message.sender, NodeId::new(key.pubkey()));
             }
         }
     }
@@ -1495,7 +1496,7 @@ mod tests {
                     // check that decoding fails
                     assert!(
                         maybe_parsed.is_err()
-                            || maybe_parsed.unwrap().author != NodeId::new(key.pubkey())
+                            || maybe_parsed.unwrap().sender != NodeId::new(key.pubkey())
                     );
 
                     // reset bit
