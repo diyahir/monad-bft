@@ -595,21 +595,21 @@ where
     // the message matches the current group.
     pub fn check_round(
         &self,
-        msg_round: Round,
+        round: Round,
         sender_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> bool {
         if let Some(group_queue) = self.fullnode_map.get(sender_node_id) {
             let mut first_span = None;
             if let Some(group) = group_queue.peek() {
                 first_span = Some(group.get_round_span());
-                if group.round_span.contains(msg_round) {
+                if group.round_span.contains(round) {
                     return true;
                 }
             }
             warn!(
-                ?msg_round, ?sender_node_id, ?first_span,
-                "Current group exists for sender but does not contain the round referenced in the message. \
-                Chunks were likely forwarded to the wrong nodes");
+                ?round, ?sender_node_id, ?first_span,
+                "RaptorCast Group exists for sender but does not contain the round referenced in the message. \
+                Chunks were possibly forwarded to the wrong nodes");
             false
         } else {
             // There is no raptorcast group keyed on message sender's node id,
@@ -669,14 +669,14 @@ where
     }
 
     // As Full-node: When secondary RaptorCast instance (Client) sends us a Group<>
-    pub fn push_group_fullnodes(&mut self, group: Group<ST>) {
-        let vid = group.get_validator_id();
+    pub fn push_group_fullnodes(&mut self, new_group: Group<ST>) {
+        let vid = new_group.get_validator_id();
         let prev_group_queue_from_vid = format!("{:?}", self.fullnode_map.get(vid));
         self.fullnode_map
             .entry(*vid)
             .or_default()
-            .push(group.clone());
-        debug!(?vid, ?prev_group_queue_from_vid, "RaptorCast Group insert",);
+            .push(new_group.clone());
+        debug!(?vid, ?new_group, ?prev_group_queue_from_vid, "RaptorCast Group insert",);
     }
 
     pub fn delete_expired_groups(&mut self, curr_epoch: Epoch, curr_round: Round) {
@@ -686,22 +686,31 @@ where
         // group scheduled for the future when we (the non-dedicated full-node)
         // aren't received proposals yet and hence do not know what the current
         // round is.
+        let dbg_fn_before = self.fullnode_map.clone();
+        let mut fnmap_len_before = 0;
+        let mut fnmap_len_after = 0;
         for (_vid, group_queue) in self.fullnode_map.iter_mut() {
+            fnmap_len_before += group_queue.len();
             group_queue.retain(|group| curr_round < group.round_span.end);
+            fnmap_len_after += group_queue.len();
         }
         self.fullnode_map
             .retain(|_vid, group_queue| !group_queue.is_empty());
 
         // clear old validator map
+        let vmap_len_before = self.validator_map.len();
         self.validator_map
             .retain(|key, _| *key + Epoch(1) >= curr_epoch);
-
+        let vmap_len_after = self.validator_map.len();
         debug!(
             epoch=?curr_epoch,
             round=?curr_round,
-            validator_map_len=?self.validator_map.len(),
-            fullnode_map_len=?self.fullnode_map.len(),
-            "RaptorCast delete_expired_groups",
+            ?fnmap_len_before,
+            ?fnmap_len_after,
+            ?vmap_len_before,
+            ?vmap_len_after,
+            ?dbg_fn_before,
+            "RaptorCast Group delete_expired_groups",
         );
     }
 
