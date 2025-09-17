@@ -621,11 +621,16 @@ where
                         waker.wake();
                     }
                 }
-                RouterCommand::UpdatePeers(peers) => {
-                    self.peer_discovery_driver
-                        .lock()
-                        .unwrap()
-                        .update(PeerDiscoveryEvent::UpdatePeers { peers });
+                RouterCommand::UpdatePeers {
+                    peer_entries,
+                    pinned_nodes,
+                } => {
+                    self.peer_discovery_driver.lock().unwrap().update(
+                        PeerDiscoveryEvent::UpdatePeers {
+                            peers: peer_entries,
+                            pinned_full_nodes: Some(pinned_nodes.into_iter().collect()),
+                        },
+                    );
                 }
                 RouterCommand::GetFullNodes => {
                     let full_nodes = self.dedicated_full_nodes.list.clone();
@@ -637,8 +642,11 @@ where
                         waker.wake();
                     }
                 }
-                RouterCommand::UpdateFullNodes(new_full_nodes) => {
-                    self.dedicated_full_nodes.list = new_full_nodes;
+                RouterCommand::UpdateFullNodes {
+                    dedicated_full_nodes,
+                    prioritized_full_nodes: _,
+                } => {
+                    self.dedicated_full_nodes.list = dedicated_full_nodes;
                 }
             }
         }

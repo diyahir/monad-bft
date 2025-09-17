@@ -1306,7 +1306,11 @@ where
         cmds
     }
 
-    fn update_peers(&mut self, peers: Vec<PeerEntry<ST>>) -> Vec<PeerDiscoveryCommand<ST>> {
+    fn update_peers(
+        &mut self,
+        peers: Vec<PeerEntry<ST>>,
+        pinned_full_nodes: Option<BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?peers, "updating peers");
 
         let mut cmds = Vec::new();
@@ -1330,6 +1334,10 @@ where
             } else {
                 warn!(?node_id, "invalid name record signature");
             }
+        }
+
+        if let Some(pinned) = pinned_full_nodes {
+            self.pinned_full_nodes = pinned;
         }
 
         cmds

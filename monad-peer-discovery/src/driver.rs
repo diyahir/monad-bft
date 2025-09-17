@@ -213,7 +213,10 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             PeerDiscoveryEvent::UpdateValidatorSet { epoch, validators } => {
                 self.pd.update_validator_set(epoch, validators)
             }
-            PeerDiscoveryEvent::UpdatePeers { peers } => self.pd.update_peers(peers),
+            PeerDiscoveryEvent::UpdatePeers {
+                peers,
+                pinned_full_nodes,
+            } => self.pd.update_peers(peers, pinned_full_nodes),
             PeerDiscoveryEvent::UpdateConfirmGroup { end_round, peers } => {
                 self.pd.update_peer_participation(end_round, peers)
             }

@@ -216,7 +216,11 @@ where
         Vec::new()
     }
 
-    fn update_peers(&mut self, peers: Vec<PeerEntry<ST>>) -> Vec<PeerDiscoveryCommand<ST>> {
+    fn update_peers(
+        &mut self,
+        peers: Vec<PeerEntry<ST>>,
+        _pinned_full_nodes: Option<BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("updating peers");
 
         for peer in peers {
