@@ -5226,6 +5226,7 @@ dependencies = [
  "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-executor",
+ "monad-node-config",
  "monad-perf-util",
  "monad-state-backend",
  "monad-system-calls",
