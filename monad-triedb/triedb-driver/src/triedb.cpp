@@ -104,8 +104,8 @@ int triedb_read(
         return -2;
     }
     int const value_len = (int)value_view.size();
-    *value = new uint8_t[value_len];
-    memcpy((void *)*value, value_view.data(), value_len);
+    *value = new uint8_t[static_cast<size_t>(value_len)];
+    memcpy((void *)*value, value_view.data(), static_cast<size_t>(value_len));
     return value_len;
 }
 
@@ -138,8 +138,8 @@ void triedb_async_read(
                 }
                 else {
                     length = (int)value_view.size();
-                    value = new uint8_t[length];
-                    memcpy((void *)value, value_view.data(), (size_t)length);
+                    value = new uint8_t[static_cast<size_t>(length)];
+                    memcpy((void *)value, value_view.data(), static_cast<size_t>(length));
                 }
             }
             delete state;

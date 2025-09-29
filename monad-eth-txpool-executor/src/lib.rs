@@ -35,6 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
+use monad_node_config::BlockBuilderConfig;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -151,6 +152,7 @@ where
                         chain_config.get_chain_revision(round),
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
                         do_local_insert,
+                        BlockBuilderConfig::default(),
                     );
 
                     Self {
