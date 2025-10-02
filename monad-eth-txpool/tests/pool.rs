@@ -25,7 +25,7 @@ use alloy_primitives::{hex, Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
-use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
+use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
     block_validator::BlockValidator,
@@ -35,16 +35,15 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, PubKey},
     NopKeyPair, NopPubKey, NopSignature,
 };
-use monad_eth_block_policy::{
-    validation::{TFM_MAX_EIP2718_ENCODED_LENGTH, TFM_MAX_GAS_LIMIT},
-    EthBlockPolicy,
-};
+use monad_eth_block_policy::{validation::TFM_MAX_GAS_LIMIT, EthBlockPolicy};
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_testutil::{
     generate_block_with_txs, make_eip1559_tx, make_eip7702_tx, make_legacy_tx,
     make_signed_authorization, recover_tx, secret_to_eth_address,
 };
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{
+    max_eip2718_encoded_length, EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics,
+};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -1370,21 +1369,22 @@ fn test_large_batch_many_senders() {
 
 #[test]
 #[traced_test]
-fn test_exceed_byte_limit() {
+fn test_exceed_proposal_byte_limit() {
+    const PROPOSAL_BYTE_LIMIT: usize = 256 * 1024;
+
     let tx1 = make_legacy_tx(
         S1,
         BASE_FEE,
         TFM_MAX_GAS_LIMIT,
         0,
-        TFM_MAX_EIP2718_ENCODED_LENGTH - 111,
+        PROPOSAL_BYTE_LIMIT - 111,
     );
     assert_eq!(
         recover_tx(tx1.clone()).eip2718_encoded_length(),
-        TFM_MAX_EIP2718_ENCODED_LENGTH
+        PROPOSAL_BYTE_LIMIT
     );
 
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-
     run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true)],
@@ -1394,7 +1394,7 @@ fn test_exceed_byte_limit() {
             base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: PROPOSAL_GAS_LIMIT,
-            byte_limit: TFM_MAX_EIP2718_ENCODED_LENGTH as u64 - 1,
+            byte_limit: PROPOSAL_BYTE_LIMIT as u64 - 1,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -1402,7 +1402,7 @@ fn test_exceed_byte_limit() {
             base_fee: BASE_FEE_PER_GAS,
             tx_limit: 2,
             gas_limit: PROPOSAL_GAS_LIMIT,
-            byte_limit: TFM_MAX_EIP2718_ENCODED_LENGTH as u64,
+            byte_limit: PROPOSAL_BYTE_LIMIT as u64,
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
@@ -1413,6 +1413,51 @@ fn test_exceed_byte_limit() {
             byte_limit: PROPOSAL_SIZE_LIMIT,
             expected_txs: vec![&tx2],
             add_to_blocktree: true,
+        },
+    ]);
+}
+
+#[test]
+#[traced_test]
+fn test_exceed_tx_max_size_limit() {
+    let max_eip2718_encoded_length: usize = max_eip2718_encoded_length(
+        MockChainConfig::DEFAULT
+            .get_execution_chain_revision(0)
+            .execution_chain_params(),
+    );
+
+    let tx1 = make_legacy_tx(
+        S1,
+        BASE_FEE,
+        TFM_MAX_GAS_LIMIT,
+        0,
+        max_eip2718_encoded_length - 111,
+    );
+    assert_eq!(
+        recover_tx(tx1.clone()).eip2718_encoded_length(),
+        max_eip2718_encoded_length
+    );
+
+    let tx2 = make_legacy_tx(
+        S1,
+        BASE_FEE,
+        TFM_MAX_GAS_LIMIT,
+        1,
+        max_eip2718_encoded_length - 110,
+    );
+    assert_eq!(
+        recover_tx(tx2.clone()).eip2718_encoded_length(),
+        max_eip2718_encoded_length + 1
+    );
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true)],
+            expected_pool_size_change: 1,
+        },
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx2, false)],
+            expected_pool_size_change: 0,
         },
     ]);
 }

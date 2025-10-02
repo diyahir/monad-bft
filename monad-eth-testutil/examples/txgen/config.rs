@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::{
     prelude::*,
-    shared::{ecmul::ECMul, erc20::ERC20, uniswap::Uniswap},
+    shared::{ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, uniswap::Uniswap},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,9 +124,12 @@ impl TrafficGen {
             GenMode::Uniswap => 10,
             GenMode::HighCallDataLowGasLimit => 30,
             GenMode::ReserveBalance => 1,
+            GenMode::ReserveBalanceFail(..) => 1,
             GenMode::SystemSpam(..) => 500,
             GenMode::SystemKeyNormal => 500,
             GenMode::SystemKeyNormalRandomPriorityFee => 500,
+            GenMode::EIP7702Reuse(..) => 10,
+            GenMode::EIP7702Create(..) => 10,
         }
     }
 
@@ -148,9 +151,12 @@ impl TrafficGen {
             GenMode::HighCallDataLowGasLimit => 3,
             GenMode::Uniswap => 20,
             GenMode::ReserveBalance => 100,
+            GenMode::ReserveBalanceFail(..) => 100,
             GenMode::SystemSpam(..) => 1,
             GenMode::SystemKeyNormal => 1,
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
+            GenMode::EIP7702Reuse(..) => 10,
+            GenMode::EIP7702Create(..) => 10,
         }
     }
 
@@ -172,9 +178,12 @@ impl TrafficGen {
             GenMode::ECMul => 100,
             GenMode::Uniswap => 200,
             GenMode::ReserveBalance => 2500,
+            GenMode::ReserveBalanceFail(..) => 2500,
             GenMode::SystemSpam(..) => 1,
             GenMode::SystemKeyNormal => 1,
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
+            GenMode::EIP7702Reuse(..) => 100,
+            GenMode::EIP7702Create(..) => 100,
         }
     }
 
@@ -200,9 +209,12 @@ impl TrafficGen {
             GenMode::ECMul => ECMUL,
             GenMode::Uniswap => Uniswap,
             GenMode::ReserveBalance => None,
+            GenMode::ReserveBalanceFail(..) => None,
             GenMode::SystemSpam(..) => None,
             GenMode::SystemKeyNormal => None,
             GenMode::SystemKeyNormalRandomPriorityFee => None,
+            GenMode::EIP7702Reuse(..) => EIP7702,
+            GenMode::EIP7702Create(..) => EIP7702,
         }
     }
 }
@@ -318,6 +330,7 @@ pub enum RequiredContract {
     ERC20,
     ECMUL,
     Uniswap,
+    EIP7702,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +339,7 @@ pub enum DeployedContract {
     ERC20(ERC20),
     ECMUL(ECMul),
     Uniswap(Uniswap),
+    EIP7702(EIP7702),
 }
 
 impl DeployedContract {
@@ -349,6 +363,13 @@ impl DeployedContract {
             _ => bail!("Expected uniswap, found {:?}", &self),
         }
     }
+
+    pub fn eip7702(self) -> Result<EIP7702> {
+        match self {
+            Self::EIP7702(batch_call) => Ok(batch_call),
+            _ => bail!("Expected eip7702, found {:?}", &self),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,6 +378,10 @@ pub enum GenMode {
     FewToMany(FewToManyConfig),
     ManyToMany(ManyToManyConfig),
     Duplicates,
+    #[serde(rename = "eip7702_reuse")]
+    EIP7702Reuse(EIP7702Config),
+    #[serde(rename = "eip7702_create")]
+    EIP7702Create(EIP7702CreateConfig),
     RandomPriorityFee,
     HighCallData,
     HighCallDataLowGasLimit,
@@ -369,6 +394,7 @@ pub enum GenMode {
     #[serde(rename = "uniswap")]
     Uniswap,
     ReserveBalance,
+    ReserveBalanceFail(ReserveBalanceFailConfig),
     SystemSpam(SystemSpamConfig),
     SystemKeyNormal,
     SystemKeyNormalRandomPriorityFee,
@@ -389,6 +415,59 @@ pub struct ManyToManyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SystemSpamConfig {
     pub call_type: SystemCallType,
+}
+
+const DEFAULT_TOTAL_AUTHORIZATIONS: usize = 5;
+const DEFAULT_AUTHORIZATIONS_PER_TX: usize = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct EIP7702Config {
+    /// Number of authorizations to create upfront and reuse across transactions
+    /// These authorizations will be used to execute code on behalf of authorized accounts
+    pub total_authorizations: usize,
+
+    /// Number of authorizations to include in each transaction's authorization list
+    /// Each transaction will call the execute function to actually use these authorizations
+    pub authorizations_per_tx: usize,
+}
+
+impl Default for EIP7702Config {
+    fn default() -> Self {
+        Self {
+            total_authorizations: DEFAULT_TOTAL_AUTHORIZATIONS,
+            authorizations_per_tx: DEFAULT_AUTHORIZATIONS_PER_TX,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct EIP7702CreateConfig {
+    /// Number of authorizations to create in each transaction
+    /// These authorizations are created but not used to execute code
+    pub authorizations_per_tx: usize,
+}
+
+impl Default for EIP7702CreateConfig {
+    fn default() -> Self {
+        Self {
+            authorizations_per_tx: DEFAULT_AUTHORIZATIONS_PER_TX,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ReserveBalanceFailConfig {
+    /// Number of failing transactions to generate per account
+    pub num_fail_txs: usize,
+}
+
+impl Default for ReserveBalanceFailConfig {
+    fn default() -> Self {
+        Self { num_fail_txs: 5 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
