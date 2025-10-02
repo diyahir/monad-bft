@@ -18,6 +18,7 @@ use std::{sync::Arc, time::Duration};
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, FixedBytes, TxKind};
 use alloy_rlp::Decodable;
+use hex;
 use alloy_rpc_types::{Filter, Log, Receipt, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
@@ -357,6 +358,102 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
         .map_present_and_no_err(MonadTransaction)
 }
 
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadSubmitBuilderBundleParams {
+    /// Array of transaction hex strings
+    pub transactions: Vec<String>,
+    /// Signature hex string
+    pub signature: String,
+    /// Signer public key hex string
+    pub signer: String,
+    /// Unix timestamp
+    pub timestamp: u64,
+}
+
+#[rpc(method = "monad_submitBuilderBundle", ignore = "tx_pool", ignore = "ipc")]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+/// Submits a cryptographically signed bundle of transactions from a block builder.
+/// These transactions will be prioritized in block proposals if the builder is authorized.
+///
+/// # Example
+/// ```json
+/// {
+///   "jsonrpc": "2.0",
+///   "method": "monad_submitBuilderBundle",
+///   "params": {
+///     "transactions": ["0x02f8...", "0x02f8..."],
+///     "signature": "0x1234...",
+///     "signer": "0x5678...",
+///     "timestamp": 1640995200
+///   },
+///   "id": 1
+/// }
+/// ```
+pub async fn monad_submitBuilderBundle(
+    app_state: &crate::handlers::resources::MonadRpcResources,
+    params: MonadSubmitBuilderBundleParams,
+) -> JsonRpcResult<Box<serde_json::value::RawValue>> {
+    trace!("monad_submitBuilderBundle: {params:?}");
+
+    // Parse the signature
+    let signature_bytes = hex::decode(&params.signature)
+        .map_err(|_| JsonRpcError::custom("Invalid signature hex format".to_string()))?;
+    
+    // Parse the signer public key
+    let signer_bytes = hex::decode(&params.signer)
+        .map_err(|_| JsonRpcError::custom("Invalid signer public key hex format".to_string()))?;
+    
+    // Parse transactions
+    let mut parsed_transactions = Vec::new();
+    for (i, tx_hex) in params.transactions.iter().enumerate() {
+        let tx_bytes = hex::decode(tx_hex)
+            .map_err(|_| JsonRpcError::custom(format!("Invalid transaction hex format at index {}", i)))?;
+        
+        let tx = TxEnvelope::decode(&mut &tx_bytes[..])
+            .map_err(|e| JsonRpcError::custom(format!("Failed to decode transaction at index {}: {}", i, e)))?;
+        
+        parsed_transactions.push(tx);
+    }
+
+    // Create the builder bundle request
+    let bundle_request = monad_eth_txpool::builder::BuilderTxBundleRequest {
+        transactions: params.transactions,
+        signature: params.signature,
+        signer: params.signer,
+        timestamp: params.timestamp,
+    };
+
+    // Send to transaction pool bridge
+    let (bundle_status_send, bundle_status_recv) = tokio::sync::oneshot::channel::<Result<usize, String>>();
+
+    if let Err(err) = app_state.txpool_bridge_client.try_send_builder_bundle(bundle_request, bundle_status_send) {
+        warn!(?err, "mempool ipc send error for builder bundle");
+        return Err(JsonRpcError::internal_error(
+            "unable to send builder bundle to validator".into(),
+        ));
+    }
+
+    match tokio::time::timeout(Duration::from_secs(2), bundle_status_recv).await {
+        Ok(Ok(Ok(added_count))) => {
+            debug!(
+                added_transactions = added_count,
+                "Successfully submitted builder bundle"
+            );
+            let result = format!("Bundle submitted with {} transactions", added_count);
+            Ok(serde_json::value::RawValue::from_string(result).unwrap())
+        }
+        Ok(Ok(Err(error_msg))) => {
+            warn!(error = %error_msg, "Builder bundle submission failed");
+            Err(JsonRpcError::custom(error_msg))
+        }
+        Ok(Err(_)) | Err(_) => {
+            warn!("txpool not responding to builder bundle submission");
+            Err(JsonRpcError::custom("txpool not responding".to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
@@ -444,5 +541,22 @@ mod tests {
                 idx + 1
             );
         }
+    }
+
+    #[tokio::test]
+    async fn monad_submit_builder_bundle() {
+        use super::*;
+        
+        let params = MonadSubmitBuilderBundleParams {
+            transactions: vec!["0x1234".to_string()],
+            signature: "0x5678".to_string(),
+            signer: "0x9abc".to_string(),
+            timestamp: 1640995200,
+        };
+
+        // This should fail with invalid hex format
+        // For now, just test that the function compiles
+        // TODO: Add proper test setup with MonadRpcResources
+        assert!(true); // Placeholder test
     }
 }

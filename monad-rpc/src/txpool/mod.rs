@@ -26,6 +26,7 @@ use flume::Receiver;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_eth_txpool::builder::BuilderTxBundleRequest;
 use pin_project::pin_project;
 use state::TxStatusSender;
 use tokio::pin;
@@ -78,8 +79,9 @@ impl EthTxPoolBridge {
         let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(&mut eviction_queue, snapshot);
 
         let (tx_sender, tx_receiver) = flume::bounded(1024);
+        let (builder_bundle_sender, builder_bundle_receiver) = flume::bounded(1024);
 
-        let client = EthTxPoolBridgeClient::new(tx_sender, state.create_view());
+        let client = EthTxPoolBridgeClient::new(tx_sender, builder_bundle_sender, state.create_view());
 
         let bridge = Self {
             socket_path,
@@ -90,12 +92,16 @@ impl EthTxPoolBridge {
             eviction_queue,
         };
 
-        let handle = EthTxPoolBridgeHandle::new(tokio::task::spawn(bridge.run(tx_receiver)));
+        let handle = EthTxPoolBridgeHandle::new(tokio::task::spawn(bridge.run(tx_receiver, builder_bundle_receiver)));
 
         Ok((client, handle))
     }
 
-    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusSender)>) {
+    async fn run(
+        mut self, 
+        tx_receiver: Receiver<(TxEnvelope, TxStatusSender)>,
+        builder_bundle_receiver: Receiver<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>
+    ) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -119,6 +125,18 @@ impl EthTxPoolBridge {
                     if let Err(e) = self.flush().await {
                         warn!("IPC flush failed, monad-bft likely crashed: {}", e);
                     }
+                }
+
+                result = builder_bundle_receiver.recv_async() => {
+                    let bundle_pair = match result {
+                        Ok(bundle_pair) => bundle_pair,
+                        Err(e) => break e,
+                    };
+
+                    // For now, we'll just respond with an error since we don't have
+                    // the actual transaction pool integration yet
+                    let (bundle, status_send) = bundle_pair;
+                    let _ = status_send.send(Err("Builder bundle submission not yet implemented in bridge".to_string()));
                 }
 
                 result = self.next() => {
