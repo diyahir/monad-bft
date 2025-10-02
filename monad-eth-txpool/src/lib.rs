@@ -16,7 +16,7 @@
 pub use self::{
     event_tracker::EthTxPoolEventTracker,
     metrics::EthTxPoolMetrics,
-    pool::{max_eip2718_encoded_length, EthTxPool},
+    pool::{builder, max_eip2718_encoded_length, EthTxPool},
 };
 
 mod event_tracker;

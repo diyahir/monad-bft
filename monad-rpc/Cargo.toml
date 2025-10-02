@@ -24,6 +24,7 @@ jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
 [dependencies]
 monad-archive = { workspace = true }
 monad-chain-config = { workspace = true }
+monad-eth-txpool = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-ethcall = { workspace = true }
@@ -54,6 +55,7 @@ dashmap = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+hex = { workspace = true }
 itertools = { workspace = true }
 notify = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }

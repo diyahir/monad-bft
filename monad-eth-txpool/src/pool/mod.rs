@@ -44,9 +44,14 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::{debug, info, warn};
 
 pub use self::transaction::max_eip2718_encoded_length;
-use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
+use self::{
+    builder::BlockBuilderTxPool, pending::PendingTxMap, tracked::TrackedTxMap,
+    transaction::ValidEthTransaction,
+};
 use crate::EthTxPoolEventTracker;
+use monad_node_config::BlockBuilderConfig;
 
+pub mod builder;
 mod pending;
 mod tracked;
 mod transaction;
@@ -69,6 +74,11 @@ where
 {
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
+
+    /// Block builder transaction pool for priority transactions
+    builder_pool: BlockBuilderTxPool<ST>,
+    /// Configuration for block builder functionality
+    builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
 
     chain_id: u64,
     chain_revision: CRT,
@@ -93,10 +103,27 @@ where
         chain_revision: CRT,
         execution_revision: MonadExecutionRevision,
         do_local_insert: bool,
+        builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) -> Self {
+        // Extract authorized builder public keys
+        let authorized_builders = builder_config
+            .authorized_builders
+            .iter()
+            .map(|builder| builder.pubkey)
+            .collect();
+
+        let builder_pool = BlockBuilderTxPool::new(
+            builder_config.max_pool_size,
+            authorized_builders,
+            builder_config.max_bundle_age_secs,
+        );
+
         Self {
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
+
+            builder_pool,
+            builder_config,
 
             chain_id,
             chain_revision,
@@ -243,6 +270,43 @@ where
         }
     }
 
+    /// Submit a cryptographically signed bundle of transactions from a block builder
+    pub fn submit_signed_builder_bundle(
+        &mut self,
+        bundle: crate::pool::builder::SignedBuilderTxBundle<ST>,
+        current_time: u64,
+    ) -> Result<usize, crate::pool::builder::BuilderError> {
+        if !self.builder_config.enabled {
+            return Err(crate::pool::builder::BuilderError::NotEnabled);
+        }
+
+        // Add the bundle to the builder pool
+        self.builder_pool.add_signed_bundle(bundle, current_time)
+    }
+
+    /// Update the authorized block builders list
+    pub fn update_authorized_builders(
+        &mut self,
+        new_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+    ) {
+        // Update the configuration
+        self.builder_config = new_config.clone();
+
+        // Extract authorized builder public keys and update the pool
+        let authorized_builders = new_config
+            .authorized_builders
+            .iter()
+            .map(|builder| builder.pubkey)
+            .collect();
+
+        self.builder_pool.update_authorized_builders(authorized_builders);
+    }
+
+    /// Get current block builder pool statistics (for monitoring/debugging)
+    pub fn get_builder_pool_stats(&self) -> (usize, bool) {
+        (self.builder_pool.len(), self.builder_config.enabled)
+    }
+
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
@@ -319,14 +383,49 @@ where
             .map(|tx| tx.length() as u64)
             .sum();
 
+        // Get block builder transactions (NEW)
+        let builder_transactions = if self.builder_config.enabled {
+            let remaining_limit = tx_limit.saturating_sub(system_transactions.len());
+            let builder_limit = remaining_limit.min(self.builder_config.max_builder_txs);
+            
+            // Clean up old bundles periodically
+            self.builder_pool.cleanup_old_bundles(timestamp_seconds);
+            
+            let builder_txs = self.builder_pool.get_transactions(builder_limit);
+            
+            debug!(
+                builder_transactions_count = builder_txs.len(),
+                builder_limit = builder_limit,
+                "including block builder transactions in proposal"
+            );
+            
+            // Raw transactions are already in the correct format
+            builder_txs
+        } else {
+            Vec::new()
+        };
+        
+        let builder_txs_size: u64 = builder_transactions
+            .iter()
+            .map(|tx| tx.length() as u64)
+            .sum();
+
+        // Get regular user transactions with adjusted limits
+        let remaining_tx_limit = tx_limit
+            .saturating_sub(system_transactions.len())
+            .saturating_sub(builder_transactions.len());
+        let remaining_byte_limit = proposal_byte_limit
+            .saturating_sub(system_txs_size)
+            .saturating_sub(builder_txs_size);
+
         let user_transactions = self.tracked.create_proposal(
             event_tracker,
             self.chain_id,
             proposed_seq_num,
             base_fee,
-            tx_limit - system_transactions.len(),
+            remaining_tx_limit,
             proposal_gas_limit,
-            proposal_byte_limit - system_txs_size,
+            remaining_byte_limit,
             block_policy,
             extending_blocks.iter().collect(),
             state_backend,
@@ -335,9 +434,19 @@ where
             &self.execution_revision,
         )?;
 
+        info!(
+            system_txs = system_transactions.len(),
+            builder_txs = builder_transactions.len(),
+            user_txs = user_transactions.len(),
+            total_txs = system_transactions.len() + builder_transactions.len() + user_transactions.len(),
+            "created proposal with transaction ordering: system -> builder -> user"
+        );
+
+        // Build block body with new ordering: system → builder → user
         let body = EthBlockBody {
             transactions: system_transactions
                 .into_iter()
+                .chain(builder_transactions.into_iter())
                 .chain(user_transactions)
                 .map(|tx| tx.into_tx())
                 .collect(),
@@ -595,6 +704,7 @@ where
             MockChainRevision::DEFAULT,
             MonadExecutionRevision::LATEST,
             true,
+            BlockBuilderConfig::default(), // Disabled by default for testing
         )
     }
 }
