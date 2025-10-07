@@ -26,11 +26,13 @@ use std::{
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
+use monad_eth_txpool::builder::SignedBuilderTxBundle;
+use monad_eth_txpool_types::BuilderBundleIpcMessage;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
@@ -92,6 +94,47 @@ where
     _phantom: PhantomData<CRT>,
 }
 
+/// Convert IPC builder bundle message to SignedBuilderTxBundle
+fn convert_builder_bundle<ST>(bundle: BuilderBundleIpcMessage) -> Result<SignedBuilderTxBundle<ST>, String>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    // Parse signature
+    let signature_bytes = hex::decode(&bundle.signature)
+        .map_err(|e| format!("Invalid signature hex: {}", e))?;
+    let signature = ST::deserialize(&signature_bytes)
+        .map_err(|e| format!("Invalid signature format: {}", e))?;
+    
+    // Parse signer public key
+    let signer_bytes = hex::decode(&bundle.signer)
+        .map_err(|e| format!("Invalid signer hex: {}", e))?;
+    let signer = CertificateSignaturePubKey::<ST>::from_bytes(&signer_bytes)
+        .map_err(|e| format!("Invalid signer format: {}", e))?;
+    
+    // Parse and recover transactions
+    let mut recovered_transactions = Vec::new();
+    for (i, tx_hex) in bundle.transactions.iter().enumerate() {
+        let tx_bytes = hex::decode(tx_hex)
+            .map_err(|e| format!("Invalid transaction hex at index {}: {}", i, e))?;
+        
+        let tx = TxEnvelope::decode(&mut &tx_bytes[..])
+            .map_err(|e| format!("Failed to decode transaction at index {}: {}", i, e))?;
+        
+        let signer = tx.secp256k1_recover()
+            .map_err(|_| format!("Failed to recover signer for transaction at index {}", i))?;
+        
+        let recovered = Recovered::new_unchecked(tx, signer);
+        recovered_transactions.push(recovered);
+    }
+    
+    Ok(SignedBuilderTxBundle {
+        transactions: recovered_transactions,
+        signature,
+        signer,
+        timestamp: bundle.timestamp,
+    })
+}
+
 impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -112,6 +155,7 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
+        builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) -> io::Result<
         TokioTaskUpdater<
             TxPoolCommand<
@@ -152,7 +196,7 @@ where
                         chain_config.get_chain_revision(round),
                         chain_config.get_execution_chain_revision(execution_timestamp_s),
                         do_local_insert,
-                        BlockBuilderConfig::default(),
+                        builder_config,
                     );
 
                     Self {
@@ -567,6 +611,39 @@ where
 
             cx.waker().wake_by_ref();
         }
+        
+        // Handle builder bundles from IPC
+        if let Some(builder_bundles) = ipc.as_mut().poll_builder_bundles() {
+            let _span = debug_span!("ipc builder bundles", len = builder_bundles.len()).entered();
+            
+            for bundle in builder_bundles {
+                match convert_builder_bundle::<ST>(bundle) {
+                    Ok(signed_bundle) => {
+                        let current_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        
+                        match pool.submit_signed_builder_bundle(signed_bundle, current_time) {
+                            Ok(added_count) => {
+                                debug!(
+                                    added_transactions = added_count,
+                                    "Successfully added builder bundle to pool"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(?e, "Failed to add builder bundle to pool");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to convert builder bundle");
+                    }
+                }
+            }
+            
+            cx.waker().wake_by_ref();
+        }
 
         if let Poll::Ready(forward_txs) = forwarding_manager.as_mut().poll_egress(cx) {
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
@@ -667,5 +744,145 @@ where
         ipc.as_mut().broadcast_tx_events(ipc_events);
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::B256;
+    use monad_crypto::certificate_signature::CertificateSignature;
+    use monad_crypto::NopSignature;
+    use monad_eth_testutil::make_legacy_tx;
+    use monad_eth_txpool_types::BuilderBundleIpcMessage;
+
+    #[test]
+    fn test_convert_builder_bundle_valid() {
+        // Create a test transaction using the helper
+        let sender = B256::from([1u8; 32]);
+        let tx_envelope = make_legacy_tx(sender, 20_000_000_000, 21000, 0, 0);
+
+        // Encode transaction as hex
+        let tx_bytes = alloy_rlp::encode(&tx_envelope);
+        let tx_hex = hex::encode(&tx_bytes);
+
+        // Create a test signature and signer
+        use monad_crypto::certificate_signature::PubKey;
+        let pubkey = monad_crypto::NopPubKey::from_bytes(&[1u8; 32]).unwrap();
+        let test_signature = NopSignature {
+            pubkey,
+            id: 12345,
+        };
+        let sig_bytes = test_signature.serialize();
+        let sig_hex = hex::encode(&sig_bytes);
+
+        let signer_hex = hex::encode(&pubkey.bytes());
+
+        // Create the bundle message
+        let bundle = BuilderBundleIpcMessage {
+            transactions: vec![tx_hex],
+            signature: sig_hex,
+            signer: signer_hex,
+            timestamp: 1234567890,
+        };
+
+        // Test conversion
+        let result = convert_builder_bundle::<NopSignature>(bundle);
+        
+        assert!(result.is_ok(), "Conversion should succeed");
+        let signed_bundle = result.unwrap();
+        assert_eq!(signed_bundle.transactions.len(), 1);
+        assert_eq!(signed_bundle.timestamp, 1234567890);
+    }
+
+    #[test]
+    fn test_convert_builder_bundle_invalid_signature_hex() {
+        let bundle = BuilderBundleIpcMessage {
+            transactions: vec![],
+            signature: "invalid_hex".to_string(),
+            signer: hex::encode(&[1u8; 32]),
+            timestamp: 1234567890,
+        };
+
+        let result = convert_builder_bundle::<NopSignature>(bundle);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid signature hex"));
+    }
+
+    #[test]
+    fn test_convert_builder_bundle_invalid_signer_hex() {
+        use monad_crypto::certificate_signature::PubKey;
+        let pubkey = monad_crypto::NopPubKey::from_bytes(&[1u8; 32]).unwrap();
+        let test_signature = NopSignature {
+            pubkey,
+            id: 12345,
+        };
+        let sig_hex = hex::encode(&test_signature.serialize());
+
+        let bundle = BuilderBundleIpcMessage {
+            transactions: vec![],
+            signature: sig_hex,
+            signer: "invalid_hex".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let result = convert_builder_bundle::<NopSignature>(bundle);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid signer hex"));
+    }
+
+    #[test]
+    fn test_convert_builder_bundle_invalid_transaction_hex() {
+        use monad_crypto::certificate_signature::PubKey;
+        let pubkey = monad_crypto::NopPubKey::from_bytes(&[1u8; 32]).unwrap();
+        let test_signature = NopSignature {
+            pubkey,
+            id: 12345,
+        };
+        let sig_hex = hex::encode(&test_signature.serialize());
+        let signer_hex = hex::encode(&pubkey.bytes());
+
+        let bundle = BuilderBundleIpcMessage {
+            transactions: vec!["invalid_tx_hex".to_string()],
+            signature: sig_hex,
+            signer: signer_hex,
+            timestamp: 1234567890,
+        };
+
+        let result = convert_builder_bundle::<NopSignature>(bundle);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid transaction hex"));
+    }
+
+    #[test]
+    fn test_convert_builder_bundle_multiple_transactions() {
+        use monad_crypto::certificate_signature::PubKey;
+        // Create two test transactions
+        let sender = B256::from([1u8; 32]);
+        let tx_envelope1 = make_legacy_tx(sender, 20_000_000_000, 21000, 0, 0);
+        let tx_envelope2 = make_legacy_tx(sender, 20_000_000_000, 21000, 1, 0);
+
+        let tx_hex1 = hex::encode(alloy_rlp::encode(&tx_envelope1));
+        let tx_hex2 = hex::encode(alloy_rlp::encode(&tx_envelope2));
+
+        let pubkey = monad_crypto::NopPubKey::from_bytes(&[1u8; 32]).unwrap();
+        let test_signature = NopSignature {
+            pubkey,
+            id: 12345,
+        };
+        let sig_hex = hex::encode(&test_signature.serialize());
+        let signer_hex = hex::encode(&pubkey.bytes());
+
+        let bundle = BuilderBundleIpcMessage {
+            transactions: vec![tx_hex1, tx_hex2],
+            signature: sig_hex,
+            signer: signer_hex,
+            timestamp: 1234567890,
+        };
+
+        let result = convert_builder_bundle::<NopSignature>(bundle);
+        assert!(result.is_ok());
+        let signed_bundle = result.unwrap();
+        assert_eq!(signed_bundle.transactions.len(), 2);
     }
 }

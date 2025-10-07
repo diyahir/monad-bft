@@ -25,8 +25,8 @@ use std::{
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::TxHash;
 use futures::StreamExt;
-use monad_eth_txpool_ipc::EthTxPoolIpcStream;
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
+use monad_eth_txpool_ipc::{EthTxPoolIpcStream, IpcStreamMessage};
+use monad_eth_txpool_types::{BuilderBundleIpcMessage, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
 use pin_project::pin_project;
 use tokio::{
     net::UnixListener,
@@ -51,6 +51,8 @@ pub struct EthTxPoolIpcServer {
     batch: Vec<TxEnvelope>,
     #[pin]
     batch_timer: Sleep,
+    
+    builder_bundles: Vec<BuilderBundleIpcMessage>,
 }
 
 impl EthTxPoolIpcServer {
@@ -73,6 +75,8 @@ impl EthTxPoolIpcServer {
 
             batch: Vec::default(),
             batch_timer: time::sleep(Duration::ZERO),
+            
+            builder_bundles: Vec::default(),
         })
     }
 
@@ -113,6 +117,8 @@ impl EthTxPoolIpcServer {
 
             batch,
             mut batch_timer,
+            
+            builder_bundles,
         } = self.project();
 
         while let Poll::Ready(result) = listener.poll_accept(cx) {
@@ -139,11 +145,18 @@ impl EthTxPoolIpcServer {
                     break;
                 };
 
-                let Some(tx) = result else {
+                let Some(message) = result else {
                     return false;
                 };
 
-                batch.push(tx);
+                match message {
+                    IpcStreamMessage::Transaction(tx) => {
+                        batch.push(tx);
+                    }
+                    IpcStreamMessage::BuilderBundle(bundle) => {
+                        builder_bundles.push(bundle);
+                    }
+                }
             }
 
             true
@@ -162,5 +175,15 @@ impl EthTxPoolIpcServer {
         }
 
         Poll::Pending
+    }
+    
+    /// Poll for builder bundles received from IPC clients
+    pub fn poll_builder_bundles(self: Pin<&mut Self>) -> Option<Vec<BuilderBundleIpcMessage>> {
+        let bundles = &mut self.project().builder_bundles;
+        if bundles.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(bundles))
+        }
     }
 }

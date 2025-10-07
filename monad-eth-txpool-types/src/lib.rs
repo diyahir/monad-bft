@@ -121,3 +121,25 @@ pub struct EthTxPoolSnapshot {
     pub pending: HashSet<TxHash>,
     pub tracked: HashSet<TxHash>,
 }
+
+/// Wire format for submitting builder transaction bundles via IPC
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BuilderBundleIpcMessage {
+    /// Array of transaction hex strings
+    pub transactions: Vec<String>,
+    /// Signature hex string
+    pub signature: String,
+    /// Signer public key hex string
+    pub signer: String,
+    /// Unix timestamp
+    pub timestamp: u64,
+}
+
+/// IPC message envelope to distinguish between transaction and builder bundle messages
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum EthTxPoolIpcMessage {
+    /// Regular transaction (RLP encoded)
+    Transaction(Vec<u8>),
+    /// Builder bundle (bincode encoded)
+    BuilderBundle(BuilderBundleIpcMessage),
+}

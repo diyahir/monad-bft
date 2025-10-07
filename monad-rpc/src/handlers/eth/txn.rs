@@ -435,13 +435,13 @@ pub async fn monad_submitBuilderBundle(
     }
 
     match tokio::time::timeout(Duration::from_secs(2), bundle_status_recv).await {
-        Ok(Ok(Ok(added_count))) => {
+        Ok(Ok(Ok(_))) => {
             debug!(
-                added_transactions = added_count,
-                "Successfully submitted builder bundle"
+                "Successfully submitted builder bundle to transaction pool"
             );
-            let result = format!("Bundle submitted with {} transactions", added_count);
-            Ok(serde_json::value::RawValue::from_string(result).unwrap())
+            // Return success - actual validation and inclusion will be handled by the transaction pool
+            let result = serde_json::json!({"status": "submitted"});
+            Ok(serde_json::value::to_raw_value(&result).unwrap())
         }
         Ok(Ok(Err(error_msg))) => {
             warn!(error = %error_msg, "Builder bundle submission failed");

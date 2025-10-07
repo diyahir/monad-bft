@@ -22,11 +22,16 @@ use std::{
 
 use alloy_consensus::TxEnvelope;
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_eth_txpool_types::{BuilderBundleIpcMessage, EthTxPoolEvent, EthTxPoolIpcMessage, EthTxPoolSnapshot};
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
+
+pub enum IpcStreamMessage {
+    Transaction(TxEnvelope),
+    BuilderBundle(BuilderBundleIpcMessage),
+}
 
 pub struct EthTxPoolIpcStream {
     // It's really ugly to emulate Sink for a Framed<UnixStream, ...> in a sync
@@ -35,7 +40,7 @@ pub struct EthTxPoolIpcStream {
     // TODO(andr-dev): Remove tokio_util and write a custom sync framer/codec
     // implementation simlar to LengthDelimnitedCodec
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
-    rx: ReceiverStream<TxEnvelope>,
+    rx: ReceiverStream<IpcStreamMessage>,
 
     handle: tokio::task::JoinHandle<io::Result<()>>,
 }
@@ -56,7 +61,7 @@ impl EthTxPoolIpcStream {
     async fn run(
         stream: UnixStream,
         snapshot: EthTxPoolSnapshot,
-        tx_sender: mpsc::Sender<TxEnvelope>,
+        tx_sender: mpsc::Sender<IpcStreamMessage>,
         mut event_rx: mpsc::Receiver<Vec<EthTxPoolEvent>>,
     ) -> io::Result<()> {
         let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
@@ -72,22 +77,36 @@ impl EthTxPoolIpcStream {
                         break;
                     };
 
-                    let Ok(tx) = alloy_rlp::decode_exact::<TxEnvelope>(result?.as_ref()) else {
-                        return Err(io::Error::new(
-                            ErrorKind::InvalidData,
-                            "EthTxPoolIpcStream received invalid tx serialized bytes!"
-                        ));
+                    // Try to decode as IPC message envelope
+                    let bytes = result?;
+                    let message = match bincode::deserialize::<EthTxPoolIpcMessage>(&bytes) {
+                        Ok(EthTxPoolIpcMessage::Transaction(tx_bytes)) => {
+                            // Decode transaction from RLP
+                            let tx = alloy_rlp::decode_exact::<TxEnvelope>(&tx_bytes)
+                                .map_err(|_| io::Error::new(
+                                    ErrorKind::InvalidData,
+                                    "Invalid transaction RLP encoding"
+                                ))?;
+                            IpcStreamMessage::Transaction(tx)
+                        }
+                        Ok(EthTxPoolIpcMessage::BuilderBundle(bundle)) => {
+                            IpcStreamMessage::BuilderBundle(bundle)
+                        }
+                        Err(_) => {
+                            return Err(io::Error::new(
+                                ErrorKind::InvalidData,
+                                "Invalid IPC message format"
+                            ));
+                        }
                     };
 
-                    let Err(error) = tx_sender.try_send(tx) else {
+                    let Err(error) = tx_sender.try_send(message) else {
                         continue;
                     };
 
                     match error {
                         mpsc::error::TrySendError::Full(_) => {
-                            // TODO(andr-dev): Make "overloaded" IPC type that RPC can monitor to pace out
-                            // tx sends
-                            warn!("dropping tx, reason: channel full");
+                            warn!("dropping message, reason: channel full");
                         },
                         mpsc::error::TrySendError::Closed(_) => break,
                     }
@@ -121,7 +140,7 @@ impl EthTxPoolIpcStream {
 }
 
 impl Stream for EthTxPoolIpcStream {
-    type Item = TxEnvelope;
+    type Item = IpcStreamMessage;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Poll::Ready(result) = self.handle.poll_unpin(cx) {
@@ -167,6 +186,18 @@ impl EthTxPoolIpcClient {
 
         Ok((Self { stream }, snapshot))
     }
+
+    /// Send a builder bundle through IPC (fire-and-forget)
+    pub async fn send_builder_bundle(&mut self, bundle: BuilderBundleIpcMessage) -> io::Result<()> {
+        let message = EthTxPoolIpcMessage::BuilderBundle(bundle);
+        let bytes = bincode::serialize(&message)
+            .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+        
+        self.stream.send(bytes.into()).await?;
+        self.stream.flush().await?;
+        
+        Ok(())
+    }
 }
 
 impl<'a> Sink<&'a TxEnvelope> for EthTxPoolIpcClient {
@@ -177,7 +208,9 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolIpcClient {
     }
 
     fn start_send(mut self: Pin<&mut Self>, tx: &'a TxEnvelope) -> Result<(), Self::Error> {
-        let bytes = alloy_rlp::encode(tx);
+        let tx_bytes = alloy_rlp::encode(tx);
+        let message = EthTxPoolIpcMessage::Transaction(tx_bytes);
+        let bytes = bincode::serialize(&message).map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
         self.stream.start_send_unpin(bytes.into())
     }
 

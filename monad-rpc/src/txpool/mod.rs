@@ -27,6 +27,7 @@ use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use monad_eth_txpool::builder::BuilderTxBundleRequest;
+use monad_eth_txpool_types::BuilderBundleIpcMessage;
 use pin_project::pin_project;
 use state::TxStatusSender;
 use tokio::pin;
@@ -133,10 +134,27 @@ impl EthTxPoolBridge {
                         Err(e) => break e,
                     };
 
-                    // For now, we'll just respond with an error since we don't have
-                    // the actual transaction pool integration yet
                     let (bundle, status_send) = bundle_pair;
-                    let _ = status_send.send(Err("Builder bundle submission not yet implemented in bridge".to_string()));
+                    
+                    // Convert to IPC message format
+                    let ipc_bundle = BuilderBundleIpcMessage {
+                        transactions: bundle.transactions,
+                        signature: bundle.signature,
+                        signer: bundle.signer,
+                        timestamp: bundle.timestamp,
+                    };
+                    
+                    // Send through IPC (fire-and-forget)
+                    match self.ipc_client.send_builder_bundle(ipc_bundle).await {
+                        Ok(()) => {
+                            // Successfully sent to transaction pool
+                            let _ = status_send.send(Ok(0)); // We don't know the count yet
+                        }
+                        Err(e) => {
+                            warn!(?e, "Failed to send builder bundle through IPC");
+                            let _ = status_send.send(Err(format!("IPC error: {}", e)));
+                        }
+                    }
                 }
 
                 result = self.next() => {
