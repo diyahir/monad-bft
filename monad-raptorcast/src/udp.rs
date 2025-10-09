@@ -25,7 +25,8 @@ use itertools::Itertools;
 use lru::LruCache;
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hasher, HasherType},
     signing_domain,
@@ -198,12 +199,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     &parsed_message.author,
                     broadcast_mode,
                 ) {
-                    tracing::debug!(
-                        src_addr = ?message.src_addr,
-                        author =? parsed_message.author,
-                        epoch =? parsed_message.epoch,
-                        "not in raptorcast group"
-                    );
                     continue;
                 }
             } else if self_hash != parsed_message.recipient_hash {
@@ -783,11 +778,12 @@ where
 
                 data
             };
-            let signature = ST::sign::<signing_domain::RaptorcastChunk>(
+            let signature = <ST as CertificateSignature>::serialize(&ST::sign::<
+                signing_domain::RaptorcastChunk,
+            >(
                 &header_with_root[SIGNATURE_SIZE..],
                 key,
-            )
-            .serialize();
+            ));
             assert_eq!(signature.len(), SIGNATURE_SIZE);
             header_with_root[..SIGNATURE_SIZE].copy_from_slice(&signature);
             let header = &header_with_root[..HEADER_LEN as usize];
@@ -893,8 +889,8 @@ where
         }
     };
     let cursor_signature = split_off(SIGNATURE_SIZE)?;
-    let signature =
-        ST::deserialize(&cursor_signature).map_err(|_| MessageValidationError::InvalidSignature)?;
+    let signature = <ST as CertificateSignature>::deserialize(&cursor_signature)
+        .map_err(|_| MessageValidationError::InvalidSignature)?;
 
     let cursor_version = split_off(2)?;
     let version = u16::from_le_bytes(cursor_version.as_ref().try_into().expect("u16 is 2 bytes"));

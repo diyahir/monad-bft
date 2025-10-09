@@ -57,7 +57,7 @@ use self::{
     reset::EthTxPoolResetTrigger,
 };
 
-mod forward;
+pub mod forward;
 mod ipc;
 mod metrics;
 mod preload;
@@ -210,7 +210,7 @@ where
                         events_tx,
                         events,
 
-                        forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
+                        forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
                         promote_pending_timer,
 
@@ -645,7 +645,10 @@ where
             cx.waker().wake_by_ref();
         }
 
-        if let Poll::Ready(forward_txs) = forwarding_manager.as_mut().poll_egress(cx) {
+        if let Poll::Ready(forward_txs) = forwarding_manager
+            .as_mut()
+            .poll_egress(pool.current_revision().1.execution_chain_params(), cx)
+        {
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
                 forward_txs,
             ))));

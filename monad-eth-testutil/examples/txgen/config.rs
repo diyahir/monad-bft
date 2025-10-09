@@ -74,6 +74,30 @@ pub struct Config {
 
     /// Otel replica name
     pub otel_replica_name: String,
+
+    /// Gas limit for contract deployment transactions
+    pub gas_limit_contract_deployment: Option<u64>,
+
+    /// Gas limit for contract call transactions (native and ERC20)
+    pub set_tx_gas_limit: Option<u64>,
+
+    /// Static priority fee for transactions (native and ERC20)
+    pub priority_fee: Option<u128>,
+
+    /// Range for random priority fee (min,max in wei)
+    pub random_priority_fee_range: Option<(u128, u128)>,
+
+    /// Override for ERC20 contract address
+    pub erc20_contract: Option<String>,
+
+    /// Override for native contract address
+    pub native_contract: Option<String>,
+
+    /// Report directory
+    pub report_dir: Option<String>,
+
+    /// Prometheus URL
+    pub prom_url: Option<String>,
 }
 
 impl Default for Config {
@@ -101,6 +125,14 @@ impl Default for Config {
             use_static_tps_interval: false,
             otel_endpoint: None,
             otel_replica_name: "default".to_string(),
+            gas_limit_contract_deployment: None,
+            set_tx_gas_limit: None,
+            priority_fee: None,
+            random_priority_fee_range: None,
+            erc20_contract: None,
+            native_contract: None,
+            report_dir: Some("reports".to_string()),
+            prom_url: None,
         }
     }
 }
@@ -114,7 +146,7 @@ impl TrafficGen {
             GenMode::FewToMany(..) => 500,
             GenMode::ManyToMany(..) => 10,
             GenMode::Duplicates => 10,
-            GenMode::RandomPriorityFee => 10,
+            GenMode::RandomPriorityFee(..) => 10,
             GenMode::HighCallData => 10,
             GenMode::SelfDestructs => 10,
             GenMode::NonDeterministicStorage => 10,
@@ -130,6 +162,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 500,
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
+            GenMode::ExtremeValues => 10,
         }
     }
 
@@ -141,7 +174,7 @@ impl TrafficGen {
             GenMode::FewToMany(..) => 100,
             GenMode::ManyToMany(..) => 100,
             GenMode::Duplicates => 100,
-            GenMode::RandomPriorityFee => 100,
+            GenMode::RandomPriorityFee(..) => 100,
             GenMode::NonDeterministicStorage => 100,
             GenMode::StorageDeletes => 100,
             GenMode::NullGen => 10,
@@ -157,6 +190,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
             GenMode::EIP7702Reuse(..) => 10,
             GenMode::EIP7702Create(..) => 10,
+            GenMode::ExtremeValues => 10,
         }
     }
 
@@ -168,7 +202,7 @@ impl TrafficGen {
             GenMode::FewToMany(..) => 1000,
             GenMode::ManyToMany(..) => 2500,
             GenMode::Duplicates => 2500,
-            GenMode::RandomPriorityFee => 2500,
+            GenMode::RandomPriorityFee(..) => 2500,
             GenMode::NonDeterministicStorage => 2500,
             GenMode::StorageDeletes => 2500,
             GenMode::NullGen => 100,
@@ -184,6 +218,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => 1,
             GenMode::EIP7702Reuse(..) => 100,
             GenMode::EIP7702Create(..) => 100,
+            GenMode::ExtremeValues => 100,
         }
     }
 
@@ -199,7 +234,10 @@ impl TrafficGen {
                 TxType::Native => None,
             },
             GenMode::Duplicates => ERC20,
-            GenMode::RandomPriorityFee => ERC20,
+            GenMode::RandomPriorityFee(config) => match config.tx_type {
+                TxType::ERC20 => ERC20,
+                TxType::Native => None,
+            },
             GenMode::HighCallData => None,
             GenMode::HighCallDataLowGasLimit => None,
             GenMode::SelfDestructs => None,
@@ -215,6 +253,7 @@ impl TrafficGen {
             GenMode::SystemKeyNormalRandomPriorityFee => None,
             GenMode::EIP7702Reuse(..) => EIP7702,
             GenMode::EIP7702Create(..) => EIP7702,
+            GenMode::ExtremeValues => ERC20,
         }
     }
 }
@@ -382,7 +421,7 @@ pub enum GenMode {
     EIP7702Reuse(EIP7702Config),
     #[serde(rename = "eip7702_create")]
     EIP7702Create(EIP7702CreateConfig),
-    RandomPriorityFee,
+    RandomPriorityFee(RandomPriorityFeeConfig),
     HighCallData,
     HighCallDataLowGasLimit,
     SelfDestructs,
@@ -398,6 +437,7 @@ pub enum GenMode {
     SystemSpam(SystemSpamConfig),
     SystemKeyNormal,
     SystemKeyNormalRandomPriorityFee,
+    ExtremeValues,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -409,6 +449,12 @@ pub struct FewToManyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManyToManyConfig {
     #[serde(default = "default_tx_type")]
+    pub tx_type: TxType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RandomPriorityFeeConfig {
+    #[serde(default = "default_tx_type_native")]
     pub tx_type: TxType,
 }
 
@@ -480,6 +526,10 @@ pub enum SystemCallType {
 
 fn default_tx_type() -> TxType {
     TxType::ERC20
+}
+
+fn default_tx_type_native() -> TxType {
+    TxType::Native
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, Serialize, PartialEq, Eq, clap::ValueEnum)]
