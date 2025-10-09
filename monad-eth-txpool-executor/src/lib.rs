@@ -102,7 +102,7 @@ where
     // Parse signature
     let signature_bytes = hex::decode(&bundle.signature)
         .map_err(|e| format!("Invalid signature hex: {}", e))?;
-    let signature = ST::deserialize(&signature_bytes)
+    let signature = <ST as monad_crypto::certificate_signature::CertificateSignature>::deserialize(&signature_bytes)
         .map_err(|e| format!("Invalid signature format: {}", e))?;
     
     // Parse signer public key

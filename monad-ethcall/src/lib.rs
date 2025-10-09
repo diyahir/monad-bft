@@ -40,7 +40,13 @@ pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/ethcall.rs"));
 }
 
-pub use bindings::monad_eth_call_pool_config as PoolConfig;
+#[derive(Clone, Copy, Debug)]
+pub struct PoolConfig {
+    pub num_threads: u32,
+    pub num_fibers: u32,
+    pub timeout_sec: u32,
+    pub queue_limit: u32,
+}
 
 #[derive(Debug)]
 pub struct EthCallExecutor {
@@ -64,9 +70,11 @@ impl EthCallExecutor {
 
         let eth_call_executor = unsafe {
             bindings::monad_eth_call_executor_create(
-                low_pool_config,
-                high_pool_config,
+                low_pool_config.num_threads,
+                low_pool_config.num_fibers,
                 node_lru_max_mem,
+                low_pool_config.timeout_sec,
+                high_pool_config.timeout_sec,
                 dbpath.as_c_str().as_ptr(),
             )
         };
