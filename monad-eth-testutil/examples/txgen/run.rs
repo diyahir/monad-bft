@@ -23,14 +23,16 @@ use std::{
     },
 };
 
+use chrono::Utc;
 use eyre::bail;
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use futures::{future::try_join_all, stream::FuturesUnordered, FutureExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{Config, DeployedContract, TrafficGen},
     generators::make_generator,
     prelude::*,
+    report::Report,
     shared::{
         ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap,
     },
@@ -56,7 +58,7 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
             workload_group_index, current_traffic_gen.name
         );
 
-        run_workload_group(&clients, &config, current_traffic_gen).await?;
+        run_workload_group(&clients, &config, workload_group_index).await?;
 
         workload_group_index = (workload_group_index + 1) % config.workload_groups.len();
     }
@@ -68,8 +70,9 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
 async fn run_workload_group(
     clients: &[ReqwestClient],
     config: &Config,
-    workload_group: &WorkloadGroup,
+    workload_group_index: usize,
 ) -> Result<()> {
+    let workload_group = &config.workload_groups[workload_group_index];
     let read_client = clients[0].clone();
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -110,8 +113,6 @@ async fn run_workload_group(
     )
     .await;
 
-    // Refresher is a primary worker
-
     let metrics_reporter = MetricsReporter::new(
         metrics.clone(),
         config.otel_endpoint.clone(),
@@ -123,7 +124,7 @@ async fn run_workload_group(
     tasks.push(
         helper_task(
             "Metrics",
-            tokio::spawn(metrics.run(Arc::clone(&shutdown))),
+            tokio::spawn(metrics.clone().run(Arc::clone(&shutdown))),
             Arc::clone(&shutdown),
         )
         .boxed(),
@@ -147,28 +148,43 @@ async fn run_workload_group(
 
     let runtime_seconds = (workload_group.runtime_minutes * 60.) as u64;
     let timeout = tokio::time::sleep(Duration::from_secs(runtime_seconds));
+    // Start time is after all tasks are started. Tasks take some time to start up so this is a better approximation of the start time
+    let start_time = Utc::now();
 
-    tokio::select! {
+    // Wait for all tasks to complete or timeout
+    let result = tokio::select! {
         _ = timeout => {
             info!("Traffic phase completed after {} minutes", workload_group.runtime_minutes);
             shutdown_clone.store(true, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_millis(100)).await;
             Ok(())
         }
-        result = tasks.next() => {
+        result = try_join_all(tasks) => {
             match result {
-                Some(Ok(_)) => {
+                Ok(_) => {
                     info!("Task completed successfully");
                     Ok(())
                 }
-                Some(Err(e)) => {
+                Err(e) => {
                     info!("Task failed: {e:?}");
                     Err(e)
                 }
-                None => Ok(()),
             }
         }
-    }
+    };
+
+    // Write report regardless of result
+    if let Some(report_dir) = config.report_dir.as_deref() {
+        let mut report = Report::new(config.clone(), workload_group_index, start_time, &metrics);
+        if let Err(e) = report.join_stats(config.prom_url.clone()).await {
+            error!("Failed to join stats for report: {e:?}");
+        }
+        if let Err(e) = report.to_json_file(report_dir.as_ref()) {
+            error!("Failed to write report: {e:?}");
+        }
+    };
+
+    result
 }
 
 fn run_traffic_gen(
@@ -189,7 +205,7 @@ fn run_traffic_gen(
     let base_fee = Arc::new(Mutex::new(
         // safe to default to 0; it'll get set later by the refresher
         // TODO share base_fee across all traffic gens?
-        0_128,
+        0_u128,
     ));
 
     // kick start cycle by injecting accounts
@@ -215,6 +231,10 @@ fn run_traffic_gen(
         &base_fee,
         config.chain_id,
         traffic_gen.gen_mode.clone(),
+        config.gas_limit_contract_deployment,
+        config.set_tx_gas_limit,
+        config.priority_fee,
+        config.random_priority_fee_range,
         Arc::clone(shutdown),
     );
 
@@ -332,6 +352,18 @@ async fn load_or_deploy_contracts(
     match contract_to_ensure {
         RequiredContract::None => Ok(DeployedContract::None),
         RequiredContract::ERC20 => {
+            // Check CLI override first
+            if let Some(addr_str) = &config.erc20_contract {
+                if let Ok(addr) = addr_str.parse::<Address>() {
+                    if verify_contract_code(client, addr).await? {
+                        info!("Using ERC20 contract from CLI: {}", addr);
+                        return Ok(DeployedContract::ERC20(ERC20 { addr }));
+                    } else {
+                        warn!("ERC20 contract from CLI has no code, falling back to auto-deploy");
+                    }
+                }
+            }
+
             match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
                     erc20: Some(erc20), ..
@@ -349,7 +381,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let erc20 = ERC20::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let erc20 = ERC20::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: Some(erc20.addr),
@@ -379,7 +418,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let ecmul = ECMul::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let ecmul = ECMul::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,
@@ -410,7 +456,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let uniswap = Uniswap::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let uniswap = Uniswap::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,
@@ -441,7 +494,14 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let eip7702 = EIP7702::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
+            let eip7702 = EIP7702::deploy(
+                &deployer,
+                client,
+                max_fee_per_gas,
+                chain_id,
+                config.gas_limit_contract_deployment,
+            )
+            .await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,

@@ -23,10 +23,12 @@ use super::{
     state::{EthTxPoolBridgeStateView, TxStatusSender},
     TxStatus,
 };
+use monad_eth_txpool::builder::BuilderTxBundleRequest;
 
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
     tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+    builder_bundle_sender: Sender<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>,
     tx_inflight: Arc<()>,
 
     state: EthTxPoolBridgeStateView,
@@ -35,10 +37,12 @@ pub struct EthTxPoolBridgeClient {
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
         tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
+        builder_bundle_sender: Sender<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         Self {
             tx_sender,
+            builder_bundle_sender,
             tx_inflight: Arc::new(()),
 
             state,
@@ -57,6 +61,14 @@ impl EthTxPoolBridgeClient {
         self.tx_sender.try_send((tx, tx_status_send))
     }
 
+    pub fn try_send_builder_bundle(
+        &self,
+        bundle: BuilderTxBundleRequest,
+        status_send: tokio::sync::oneshot::Sender<Result<usize, String>>,
+    ) -> Result<(), TrySendError<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>> {
+        self.builder_bundle_sender.try_send((bundle, status_send))
+    }
+
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
         self.state.get_status_by_hash(hash)
     }
@@ -67,9 +79,11 @@ impl EthTxPoolBridgeClient {
 
     pub fn for_testing() -> Self {
         let (tx_sender, _) = flume::bounded(0);
+        let (builder_bundle_sender, _) = flume::bounded(0);
 
         Self {
             tx_sender,
+            builder_bundle_sender,
             tx_inflight: Arc::new(()),
 
             state: EthTxPoolBridgeStateView::for_testing(),

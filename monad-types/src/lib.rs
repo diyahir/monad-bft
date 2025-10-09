@@ -26,11 +26,11 @@ use alloy_primitives::U256;
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
-use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
+use monad_crypto::certificate_signature::PubKey;
 pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
 pub const GENESIS_ROUND: Round = Round(0);
@@ -53,7 +53,7 @@ const SERIALIZE_VERSION: u16 = 1;
     Ord,
     PartialEq,
     PartialOrd,
-    AsBytes,
+    IntoBytes,
     Serialize,
     Deserialize,
     RlpEncodableWrapper,
@@ -171,7 +171,7 @@ impl Default for RoundSpan {
     Ord,
     Serialize,
     Deserialize,
-    AsBytes,
+    IntoBytes,
     RlpEncodableWrapper,
     RlpDecodableWrapper,
 )]
@@ -238,7 +238,7 @@ impl Debug for Epoch {
     Ord,
     PartialEq,
     PartialOrd,
-    AsBytes,
+    IntoBytes,
     Serialize,
     Deserialize,
     RlpEncodableWrapper,
@@ -417,35 +417,6 @@ where
     let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
 
     P::from_bytes(&bytes).map_err(<D::Error as serde::de::Error>::custom)
-}
-
-pub fn serialize_certificate_signature<S, ST>(
-    signature: &ST,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    ST: CertificateSignatureRecoverable,
-{
-    let hex_str = "0x".to_string() + &hex::encode(signature.serialize());
-    serializer.serialize_str(&hex_str)
-}
-
-pub fn deserialize_certificate_signature<'de, D, ST>(deserializer: D) -> Result<ST, D::Error>
-where
-    ST: CertificateSignatureRecoverable,
-    D: Deserializer<'de>,
-{
-    let buf = <String as Deserialize>::deserialize(deserializer)?;
-
-    let hex_str = match buf.strip_prefix("0x") {
-        Some(hex_str) => hex_str,
-        None => &buf,
-    };
-
-    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
-
-    ST::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }
 
 /// BlockId uniquely identifies a block
@@ -696,7 +667,7 @@ where
 }
 
 pub trait ExecutionProtocol:
-    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + 'static
+    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + Serialize + 'static
 {
     /// inputs to execution
     type ProposedHeader: Debug
@@ -708,6 +679,7 @@ pub trait ExecutionProtocol:
         + Unpin
         + Encodable
         + Decodable
+        + Serialize
         // TODO delete Default once null blocks are gone
         + Default;
     type Body: Debug
@@ -719,6 +691,7 @@ pub trait ExecutionProtocol:
         + Unpin
         + Encodable
         + Decodable
+        + Serialize
         // TODO delete Default once null blocks are gone
         + Default;
 
@@ -727,7 +700,7 @@ pub trait ExecutionProtocol:
 }
 
 pub trait FinalizedHeader:
-    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable
+    Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable + Serialize
 {
     fn seq_num(&self) -> SeqNum;
 }
