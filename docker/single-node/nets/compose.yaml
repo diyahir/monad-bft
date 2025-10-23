@@ -16,13 +16,7 @@ services:
       - ./node:/monad
     security_opt:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
-    command:
-      monad
-      --chain monad_devnet
-      --db /monad/triedb/test.db
-      --block_db /monad/ledger
-      --nblocks 0
-      --log_level ERROR
+    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --nblocks 0 --log_level ERROR
     ulimits:
       memlock:
         soft: "16770785280"
@@ -55,12 +49,14 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${DEVNET_DIR}/Dockerfile
+      args:
+        - GIT_TAG_VERSION=dev-local
     image: monad-node:latest
     depends_on:
       - build_triedb
       - monad_execution
     environment:
-      - RUST_LOG=
+      - RUST_LOG=${RUST_LOG:-info}
     volumes:
       - ./node:/monad
     security_opt:
@@ -87,10 +83,14 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${RPC_DIR}/Dockerfile
+      args:
+        - GIT_TAG_VERSION=dev-local
     image: monad-rpc:latest
     depends_on:
       - build_triedb
       - monad_node
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
     volumes:
       - ./node:/monad
     security_opt:

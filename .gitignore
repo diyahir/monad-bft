@@ -19,3 +19,5 @@ test-keys
 /venv
 /logs
 **/proptest-regressions/
+monad-bft.code-workspace
+monad-node-config/src/monad.code-workspace

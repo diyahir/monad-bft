@@ -99,33 +99,68 @@ fn convert_builder_bundle<ST>(bundle: BuilderBundleIpcMessage) -> Result<SignedB
 where
     ST: CertificateSignatureRecoverable,
 {
+    debug!("Converting builder bundle:");
+    debug!("  Signature hex length: {}", bundle.signature.len());
+    debug!("  Signer hex length: {}", bundle.signer.len());
+    
     // Parse signature
     let signature_bytes = hex::decode(&bundle.signature)
-        .map_err(|e| format!("Invalid signature hex: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to decode signature hex: {}", e);
+            format!("Invalid signature hex: {}", e)
+        })?;
+    debug!("  Signature bytes length: {}", signature_bytes.len());
+    
     let signature = <ST as monad_crypto::certificate_signature::CertificateSignature>::deserialize(&signature_bytes)
-        .map_err(|e| format!("Invalid signature format: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to deserialize signature: {}", e);
+            format!("Invalid signature format: {}", e)
+        })?;
+    debug!("  Signature deserialized successfully");
     
     // Parse signer public key
     let signer_bytes = hex::decode(&bundle.signer)
-        .map_err(|e| format!("Invalid signer hex: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to decode signer hex: {}", e);
+            format!("Invalid signer hex: {}", e)
+        })?;
+    debug!("  Signer bytes length: {}", signer_bytes.len());
+    
     let signer = CertificateSignaturePubKey::<ST>::from_bytes(&signer_bytes)
-        .map_err(|e| format!("Invalid signer format: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to parse signer public key: {}", e);
+            format!("Invalid signer format: {}", e)
+        })?;
+    debug!("  Signer public key parsed successfully");
     
     // Parse and recover transactions
     let mut recovered_transactions = Vec::new();
     for (i, tx_hex) in bundle.transactions.iter().enumerate() {
         let tx_bytes = hex::decode(tx_hex)
-            .map_err(|e| format!("Invalid transaction hex at index {}: {}", i, e))?;
+            .map_err(|e| {
+                warn!("Failed to decode transaction {} hex: {}", i, e);
+                format!("Invalid transaction hex at index {}: {}", i, e)
+            })?;
         
         let tx = TxEnvelope::decode(&mut &tx_bytes[..])
-            .map_err(|e| format!("Failed to decode transaction at index {}: {}", i, e))?;
+            .map_err(|e| {
+                warn!("Failed to decode transaction {} envelope: {}", i, e);
+                format!("Failed to decode transaction at index {}: {}", i, e)
+            })?;
         
-        let signer = tx.secp256k1_recover()
-            .map_err(|_| format!("Failed to recover signer for transaction at index {}", i))?;
+        let tx_signer = tx.secp256k1_recover()
+            .map_err(|_| {
+                warn!("Failed to recover signer for transaction {}", i);
+                format!("Failed to recover signer for transaction at index {}", i)
+            })?;
         
-        let recovered = Recovered::new_unchecked(tx, signer);
+        debug!("  Transaction {} recovered, hash: {:?}", i, tx.tx_hash());
+        
+        let recovered = Recovered::new_unchecked(tx, tx_signer);
         recovered_transactions.push(recovered);
     }
+    
+    debug!("Successfully converted bundle with {} transactions", recovered_transactions.len());
     
     Ok(SignedBuilderTxBundle {
         transactions: recovered_transactions,
@@ -616,28 +651,41 @@ where
         if let Some(builder_bundles) = ipc.as_mut().poll_builder_bundles() {
             let _span = debug_span!("ipc builder bundles", len = builder_bundles.len()).entered();
             
-            for bundle in builder_bundles {
+            debug!("Received {} builder bundle(s) from IPC", builder_bundles.len());
+            
+            for (idx, bundle) in builder_bundles.into_iter().enumerate() {
+                debug!("Processing builder bundle {}", idx);
+                debug!("  Signer: {}", bundle.signer);
+                debug!("  Timestamp: {}", bundle.timestamp);
+                debug!("  Num transactions: {}", bundle.transactions.len());
+                
                 match convert_builder_bundle::<ST>(bundle) {
                     Ok(signed_bundle) => {
+                        debug!("Successfully converted builder bundle {}", idx);
+                        debug!("  Converted {} transactions", signed_bundle.transactions.len());
+                        
                         let current_time = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
                             .as_secs();
                         
+                        debug!("  Current time: {}, bundle timestamp: {}", current_time, signed_bundle.timestamp);
+                        
                         match pool.submit_signed_builder_bundle(signed_bundle, current_time) {
                             Ok(added_count) => {
                                 debug!(
                                     added_transactions = added_count,
-                                    "Successfully added builder bundle to pool"
+                                    "Successfully added builder bundle {} to pool",
+                                    idx
                                 );
                             }
                             Err(e) => {
-                                warn!(?e, "Failed to add builder bundle to pool");
+                                warn!(?e, "Failed to add builder bundle {} to pool", idx);
                             }
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to convert builder bundle");
+                        warn!(error = %e, "Failed to convert builder bundle {}", idx);
                     }
                 }
             }

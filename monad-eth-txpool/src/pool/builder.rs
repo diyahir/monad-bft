@@ -20,7 +20,7 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
-use alloy_primitives::{keccak256, B256};
+use alloy_primitives::{hex, keccak256, B256};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -54,14 +54,21 @@ impl<ST: CertificateSignatureRecoverable> SignedBuilderTxBundle<ST> {
         let mut data = Vec::new();
         
         // Hash transaction data
-        for tx in &self.transactions {
-            data.extend_from_slice(tx.tx_hash().as_slice());
+        for (i, tx) in self.transactions.iter().enumerate() {
+            let tx_hash = tx.tx_hash();
+            debug!("  Bundle hash TX[{}]: 0x{}", i, hex::encode(tx_hash.as_slice()));
+            data.extend_from_slice(tx_hash.as_slice());
         }
         
         // Include timestamp for replay protection
-        data.extend_from_slice(&self.timestamp.to_be_bytes());
+        let timestamp_bytes = self.timestamp.to_be_bytes();
+        debug!("  Bundle hash timestamp bytes: 0x{}", hex::encode(&timestamp_bytes));
+        data.extend_from_slice(&timestamp_bytes);
         
-        keccak256(data)
+        debug!("  Bundle hash input data: 0x{}", hex::encode(&data));
+        let hash = keccak256(data);
+        debug!("  Computed bundle hash: 0x{}", hex::encode(hash.as_slice()));
+        hash
     }
     
     /// Verify the signature on this bundle
@@ -134,19 +141,31 @@ impl<ST: CertificateSignatureRecoverable> BlockBuilderTxPool<ST> {
         bundle: SignedBuilderTxBundle<ST>,
         current_time: u64,
     ) -> Result<usize, BuilderError> {
+        debug!("=== Builder Bundle Validation ===");
+        debug!("  Timestamp: {}", bundle.timestamp);
+        debug!("  Current time: {}", current_time);
+        debug!("  Num transactions: {}", bundle.transactions.len());
+        debug!("  Signer: {:?}", bundle.signer);
+        
         // 1. Check if builder is authorized
+        debug!("Step 1: Checking authorization...");
+        debug!("  Authorized builders: {:?}", self.authorized_builders);
         if !self.authorized_builders.contains(&bundle.signer) {
-            debug!(
+            warn!(
                 signer = ?bundle.signer,
                 "Unauthorized block builder attempted to submit transactions"
             );
             return Err(BuilderError::UnauthorizedBuilder);
         }
+        debug!("  ✓ Builder is authorized");
 
         // 2. Check timestamp (not too old, not too far in future)
+        debug!("Step 2: Checking timestamp validity...");
         let age = current_time.saturating_sub(bundle.timestamp);
+        debug!("  Bundle age: {} seconds", age);
+        debug!("  Max age: {} seconds", self.max_bundle_age_secs);
         if age > self.max_bundle_age_secs {
-            debug!(
+            warn!(
                 bundle_age = age,
                 max_age = self.max_bundle_age_secs,
                 "Block builder bundle too old"
@@ -155,49 +174,64 @@ impl<ST: CertificateSignatureRecoverable> BlockBuilderTxPool<ST> {
         }
         if bundle.timestamp > current_time + 60 {
             // 1 minute future tolerance
-            debug!(
+            warn!(
                 bundle_timestamp = bundle.timestamp,
                 current_time = current_time,
                 "Block builder bundle timestamp from future"
             );
             return Err(BuilderError::BundleFromFuture);
         }
+        debug!("  ✓ Timestamp is valid");
 
         // 3. Verify cryptographic signature
+        debug!("Step 3: Verifying cryptographic signature...");
+        let bundle_hash = bundle.compute_bundle_hash();
+        debug!("  Bundle hash: {:?}", bundle_hash);
         if !bundle.verify_signature() {
             warn!(
                 signer = ?bundle.signer,
+                bundle_hash = ?bundle_hash,
                 "Invalid cryptographic signature on block builder bundle"
             );
             return Err(BuilderError::InvalidSignature);
         }
+        debug!("  ✓ Signature is valid");
 
         // 4. Check for replay (bundle hash already seen recently)
-        let bundle_hash = bundle.compute_bundle_hash();
+        debug!("Step 4: Checking for replay...");
         if self.recent_bundles.contains_key(&bundle_hash) {
-            debug!(
+            warn!(
                 bundle_hash = ?bundle_hash,
                 "Replay attempt detected for block builder bundle"
             );
             return Err(BuilderError::ReplayAttempt);
         }
+        debug!("  ✓ Not a replay");
 
         // 5. Add to recent bundles cache
         self.recent_bundles.insert(bundle_hash, current_time);
 
         // 6. Store raw transactions (validation happens later in existing pipeline)
+        debug!("Step 5: Adding transactions to pool...");
+        debug!("  Current pool size: {}/{}", self.transactions.len(), self.max_size);
+        
         let mut added = 0;
-        for tx in bundle.transactions {
+        for (i, tx) in bundle.transactions.into_iter().enumerate() {
             if self.transactions.len() >= self.max_size {
-                // Remove oldest transaction to make room
+                debug!("  Pool full, removing oldest transaction to make room");
                 self.transactions.pop_front();
             }
 
+            debug!("  Adding transaction {}: {:?}", i, tx.tx_hash());
             // Store raw transaction - validation happens when creating proposal
             self.transactions.push_back(tx);
             added += 1;
         }
 
+        debug!("  ✓ Added {} transactions to builder pool", added);
+        debug!("  New pool size: {}", self.transactions.len());
+        debug!("=== Builder Bundle Validation Complete ===");
+        
         debug!(
             signer = ?bundle.signer,
             added_transactions = added,

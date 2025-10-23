@@ -45,7 +45,7 @@ use self::{
             monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
             monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
-            monad_submitBuilderBundle,
+            monad_submitBuilderBundle_impl,
         },
     },
     meta::{monad_net_version, monad_web3_client_version},
@@ -187,13 +187,13 @@ pub async fn rpc_handler(
 }
 
 #[allow(non_snake_case)]
-async fn monad_submitBuilderBundle_wrapper(
+async fn monad_submitBuilderBundle(
     _: RequestId,
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_submitBuilderBundle(app_state, params)
+    monad_submitBuilderBundle_impl(app_state, params)
         .await
 }
 
@@ -885,7 +885,7 @@ enabled_methods!(
     eth_feeHistory,
     eth_getTransactionReceipt,
     eth_getBlockReceipts,
-    monad_submitBuilderBundle_wrapper,
+    monad_submitBuilderBundle,
     net_version,
     txpool_statusByHash,
     txpool_statusByAddress,

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["monad-*"]
+members = ["monad-*", "magma-external-blockbuilder-tests"]
 exclude = ["monad-scripts"]
 
 [profile.dev]
