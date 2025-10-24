@@ -113,7 +113,6 @@ where
             .collect();
 
         let builder_pool = BlockBuilderTxPool::new(
-            builder_config.max_pool_size,
             authorized_builders,
             builder_config.max_bundle_age_secs,
         );
@@ -390,16 +389,15 @@ where
         // Get block builder transactions (NEW)
         let builder_transactions = if self.builder_config.enabled {
             let remaining_limit = tx_limit.saturating_sub(system_transactions.len());
-            let builder_limit = remaining_limit.min(self.builder_config.max_builder_txs);
             
             // Clean up old bundles periodically
             self.builder_pool.cleanup_old_bundles(timestamp_seconds);
             
-            let builder_txs = self.builder_pool.get_transactions(builder_limit);
+            let builder_txs = self.builder_pool.get_transactions(remaining_limit);
             
             debug!(
                 builder_transactions_count = builder_txs.len(),
-                builder_limit = builder_limit,
+                remaining_limit = remaining_limit,
                 "including block builder transactions in proposal"
             );
             

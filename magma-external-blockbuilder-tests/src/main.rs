@@ -45,8 +45,6 @@ struct BuilderBundleResponse {
 #[derive(Debug)]
 struct TestResult {
     test_number: usize,
-    normal_tx_hash: String,
-    builder_tx_hash: String,
     normal_tx_block: u64,
     builder_tx_block: u64,
     normal_tx_index: u64,
@@ -117,15 +115,29 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Run bundle ordering test
+    info!("\n========== Bundle Ordering Test ==========");
+    info!("Testing that transactions in a bundle maintain their specified order...\n");
+    
+    match test_bundle_ordering(&builder_keypair).await {
+        Ok(()) => {
+            info!("✓ Bundle ordering test PASSED!");
+            info!("  All transactions appeared in the correct order.\n");
+        }
+        Err(e) => {
+            tracing::error!("✗ Bundle ordering test FAILED!");
+            tracing::error!("  Error: {:?}\n", e);
+        }
+    }
+
     // Run multiple test iterations
     let num_tests = 10;
     let mut results = Vec::new();
 
     for i in 1..=num_tests {
-        info!("\n========== Test Iteration {} ==========", i);
+        tracing::debug!("\n========== Test Iteration {} ==========", i);
         match run_single_test(i, &builder_keypair).await {
             Ok(result) => {
-                info!("Test {} completed successfully", i);
                 results.push(result);
             }
             Err(e) => {
@@ -180,8 +192,149 @@ async fn check_rpc_connectivity() -> Result<u64> {
     Ok(chain_id)
 }
 
+async fn test_bundle_ordering(builder_keypair: &BuilderKeypair) -> Result<()> {
+    tracing::debug!("Creating 6 transactions interleaved between two accounts...");
+    
+    // Setup signers for both accounts
+    let signer1 = PrivateKeySigner::from_str(ACCOUNT_1_PRIVATE_KEY)?;
+    let signer2 = PrivateKeySigner::from_str(ACCOUNT_2_PRIVATE_KEY)?;
+    
+    let wallet1 = EthereumWallet::from(signer1.clone());
+    let wallet2 = EthereumWallet::from(signer2.clone());
+    
+    // Create providers
+    let provider1 = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .wallet(wallet1.clone())
+        .on_http(RPC_URL.parse()?);
+    
+    let provider2 = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .wallet(wallet2.clone())
+        .on_http(RPC_URL.parse()?);
+    
+    let addr1 = Address::from_str(ACCOUNT_1_ADDRESS)?;
+    let addr2 = Address::from_str(ACCOUNT_2_ADDRESS)?;
+    
+    // Get current nonces
+    let nonce1 = provider1.get_transaction_count(addr1).await?;
+    let nonce2 = provider2.get_transaction_count(addr2).await?;
+    
+    tracing::debug!("Account 1 starting nonce: {}", nonce1);
+    tracing::debug!("Account 2 starting nonce: {}", nonce2);
+    
+    // Create 6 transactions, interleaved between accounts
+    // Pattern: acc1[0], acc2[0], acc1[1], acc2[1], acc1[2], acc2[2]
+    let mut bundle_txs = Vec::new();
+    let mut expected_hashes = Vec::new();
+    
+    for i in 0..3 {
+        // Transaction from account 1
+        let tx1 = TransactionRequest::default()
+            .with_to(addr2)
+            .with_value(U256::from(1000000000000000u64)) // 0.001 ETH
+            .with_gas_limit(21000)
+            .with_max_fee_per_gas(100_000_000_000)
+            .with_max_priority_fee_per_gas(100_000_000_000)
+            .with_chain_id(CHAIN_ID)
+            .with_nonce(nonce1 + i);
+        
+        let tx1_envelope = tx1.build(&wallet1).await?;
+        let tx1_encoded = tx1_envelope.encoded_2718();
+        let tx1_hash = keccak256(&tx1_encoded);
+        bundle_txs.push(hex::encode(&tx1_encoded));
+        expected_hashes.push(format!("0x{}", hex::encode(tx1_hash)));
+        
+        tracing::debug!("  Created acc1 tx {} with nonce {}: {}", i, nonce1 + i, expected_hashes.last().unwrap());
+        
+        // Transaction from account 2
+        let tx2 = TransactionRequest::default()
+            .with_to(addr1)
+            .with_value(U256::from(1000000000000000u64)) // 0.001 ETH
+            .with_gas_limit(21000)
+            .with_max_fee_per_gas(100_000_000_000)
+            .with_max_priority_fee_per_gas(100_000_000_000)
+            .with_chain_id(CHAIN_ID)
+            .with_nonce(nonce2 + i);
+        
+        let tx2_envelope = tx2.build(&wallet2).await?;
+        let tx2_encoded = tx2_envelope.encoded_2718();
+        let tx2_hash = keccak256(&tx2_encoded);
+        bundle_txs.push(hex::encode(&tx2_encoded));
+        expected_hashes.push(format!("0x{}", hex::encode(tx2_hash)));
+        
+        tracing::debug!("  Created acc2 tx {} with nonce {}: {}", i, nonce2 + i, expected_hashes.last().unwrap());
+    }
+    
+    tracing::debug!("Submitting bundle with 6 transactions...");
+    tracing::debug!("Expected order: acc1[0], acc2[0], acc1[1], acc2[1], acc1[2], acc2[2]");
+    
+    // Submit the bundle
+    submit_builder_bundle(bundle_txs, builder_keypair).await?;
+    tracing::debug!("Bundle submitted successfully");
+    
+    // Wait for all transactions to be mined
+    tracing::debug!("Waiting for all transactions to be mined...");
+    let mut receipts = Vec::new();
+    
+    for (i, tx_hash) in expected_hashes.iter().enumerate() {
+        match wait_for_transaction_receipt(tx_hash, 30).await {
+            Ok(receipt) => {
+                tracing::debug!("  TX[{}] mined in block {}, index {}", 
+                      i, 
+                      receipt.block_number.unwrap_or(0),
+                      receipt.transaction_index.unwrap_or(0));
+                receipts.push(receipt);
+            }
+            Err(e) => {
+                tracing::error!("  TX[{}] failed to mine: {:?}", i, e);
+                anyhow::bail!("Transaction {} failed to mine", i);
+            }
+        }
+    }
+    
+    // Verify all transactions are in the same block
+    let first_block = receipts[0].block_number.context("Missing block number")?;
+    let all_same_block = receipts.iter().all(|r| r.block_number == Some(first_block));
+    
+    if !all_same_block {
+        anyhow::bail!("Not all transactions appeared in the same block!");
+    }
+    
+    info!("All 6 transactions appeared in block {}", first_block);
+    
+    // Verify ordering
+    tracing::debug!("Verifying transaction order...");
+    let indices: Vec<(usize, u64)> = receipts
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i, r.transaction_index.unwrap_or(u64::MAX)))
+        .collect();
+    
+    // Check if indices are sequential
+    let first_index = indices[0].1;
+    let mut order_correct = true;
+    
+    for (i, (_tx_num, index)) in indices.iter().enumerate() {
+        let expected_index = first_index + i as u64;
+        tracing::debug!("  TX[{}]: index {} (expected {})", i, index, expected_index);
+        
+        if *index != expected_index {
+            order_correct = false;
+            tracing::error!("  ✗ TX[{}] has wrong index! Expected {}, got {}", i, expected_index, index);
+        }
+    }
+    
+    if !order_correct {
+        anyhow::bail!("Transactions did not appear in the correct order!");
+    }
+    
+    info!("All transactions maintained correct sequential order");
+    Ok(())
+}
+
 async fn test_builder_bundle_connectivity(builder_keypair: &BuilderKeypair) -> Result<()> {
-    info!("Creating a simple test transaction for builder bundle...");
+    tracing::debug!("Creating a simple test transaction for builder bundle...");
     
     // Setup signer for test account
     let signer = PrivateKeySigner::from_str(ACCOUNT_2_PRIVATE_KEY)?;
@@ -197,7 +350,7 @@ async fn test_builder_bundle_connectivity(builder_keypair: &BuilderKeypair) -> R
     let addr2 = Address::from_str(ACCOUNT_2_ADDRESS)?;
     
     let nonce = provider.get_transaction_count(addr2).await?;
-    info!("Test account nonce: {}", nonce);
+    tracing::debug!("Test account nonce: {}", nonce);
     
     // Create a simple transaction
     let tx = TransactionRequest::default()
@@ -216,18 +369,18 @@ async fn test_builder_bundle_connectivity(builder_keypair: &BuilderKeypair) -> R
     let tx_hash = keccak256(&tx_encoded);
     let expected_hash = format!("0x{}", hex::encode(tx_hash));
     
-    info!("Test transaction hash: {}", expected_hash);
-    info!("Submitting via builder bundle...");
+    tracing::debug!("Test transaction hash: {}", expected_hash);
+    tracing::debug!("Submitting via builder bundle...");
     
     // Submit via builder bundle
     let returned_hash = submit_builder_bundle(vec![tx_hex], builder_keypair).await?;
-    info!("Builder bundle accepted, returned hash: {}", returned_hash);
+    tracing::debug!("Builder bundle accepted, returned hash: {}", returned_hash);
     
     // Wait for transaction to be mined
-    info!("Waiting for transaction to be mined (3 second timeout)...");
+    tracing::debug!("Waiting for transaction to be mined (3 second timeout)...");
     match wait_for_transaction_receipt(&expected_hash, 3).await {
         Ok(receipt) => {
-            info!("✓ Transaction mined in block {}", receipt.block_number.unwrap_or(0));
+            tracing::debug!("Transaction mined in block {}", receipt.block_number.unwrap_or(0));
             Ok(())
         }
         Err(e) => {
@@ -264,8 +417,8 @@ async fn run_single_test(test_num: usize, builder_keypair: &BuilderKeypair) -> R
     let nonce1 = provider1.get_transaction_count(addr1).await?;
     let nonce2 = provider2.get_transaction_count(addr2).await?;
 
-    info!("Account 1 nonce: {}", nonce1);
-    info!("Account 2 nonce: {}", nonce2);
+    tracing::debug!("Account 1 nonce: {}", nonce1);
+    tracing::debug!("Account 2 nonce: {}", nonce2);
 
     // Create normal transaction (tx1) - simple transfer
     let tx1 = TransactionRequest::default()
@@ -292,22 +445,23 @@ async fn run_single_test(test_num: usize, builder_keypair: &BuilderKeypair) -> R
     let tx2_encoded = tx2_envelope.encoded_2718();
     let tx2_hex = hex::encode(&tx2_encoded); // No 0x prefix for builder bundle
 
-    info!("Signed tx2 for builder bundle");
+    tracing::debug!("Signed tx2 for builder bundle");
 
-    // Submit tx2 via builder bundle FIRST
-    let builder_tx_hash = submit_builder_bundle(vec![tx2_hex.clone()], builder_keypair).await?;
-    info!("Builder bundle submitted: {}", builder_tx_hash);
-
-    // Small delay to ensure builder bundle is processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // Submit tx1 via normal RPC
-    let pending_tx1 = provider1.send_transaction(tx1).await?;
+    // Submit both transactions concurrently to minimize delay
+    // The normal tx is initiated first, but both requests are sent without waiting
+    let normal_future = provider1.send_transaction(tx1);
+    let builder_future = submit_builder_bundle(vec![tx2_hex.clone()], builder_keypair);
+    
+    let (pending_tx1_result, builder_tx_hash_result) = tokio::join!(normal_future, builder_future);
+    let pending_tx1 = pending_tx1_result?;
+    let builder_tx_hash = builder_tx_hash_result?;
+    
     let normal_tx_hash = format!("{:?}", pending_tx1.tx_hash());
-    info!("Normal transaction submitted: {}", normal_tx_hash);
+    tracing::debug!("Normal transaction submitted: {}", normal_tx_hash);
+    tracing::debug!("Builder bundle submitted: {}", builder_tx_hash);
 
     // Wait for both transactions to be mined
-    info!("Waiting for transactions to be mined...");
+    tracing::debug!("Waiting for transactions to be mined...");
 
     let normal_receipt = pending_tx1
         .get_receipt()
@@ -322,8 +476,8 @@ async fn run_single_test(test_num: usize, builder_keypair: &BuilderKeypair) -> R
     let normal_index = normal_receipt.transaction_index.unwrap_or(0);
     let builder_index = builder_receipt.transaction_index.unwrap_or(0);
 
-    info!("Normal tx: block {}, index {}", normal_block, normal_index);
-    info!(
+    tracing::debug!("Normal tx: block {}, index {}", normal_block, normal_index);
+    tracing::debug!(
         "Builder tx: block {}, index {}",
         builder_block, builder_index
     );
@@ -335,10 +489,20 @@ async fn run_single_test(test_num: usize, builder_keypair: &BuilderKeypair) -> R
         builder_block < normal_block
     };
 
+    if same_block {
+        if builder_first {
+            info!("✓ Test {}: Builder tx first (block {}, indices: builder={}, normal={})", 
+                  test_num, normal_block, builder_index, normal_index);
+        } else {
+            info!("✗ Test {}: Normal tx first (block {}, indices: builder={}, normal={})", 
+                  test_num, normal_block, builder_index, normal_index);
+        }
+    } else {
+        info!("Test {}: Different blocks (builder={}, normal={})", test_num, builder_block, normal_block);
+    }
+
     Ok(TestResult {
         test_number: test_num,
-        normal_tx_hash,
-        builder_tx_hash,
         normal_tx_block: normal_block,
         builder_tx_block: builder_block,
         normal_tx_index: normal_index,

@@ -86,30 +86,16 @@ max_rtt_ms = 300
 max_mbps = 1000
 
 #########################################################
-# Block Builder Configuration
+# External Block Builder Configuration
 #########################################################
 [block_builder]
 # Enable block builder transaction prioritization
 enabled = true
 
-# Maximum number of block builder transactions per block
-max_builder_txs = 1000
-
-# Maximum number of builder transactions to store in memory
-max_pool_size = 5000
-
-# API endpoint for receiving builder transactions (optional)
-# api_endpoint = "0.0.0.0:8001"
-
 # Maximum age of builder bundles in seconds (replay protection)
 max_bundle_age_secs = 300
 
 # Authorized block builder identities
-# Add your builder's public key here
-# [[block_builder.authorized_builders]]
-# name = "my-builder"
-# pubkey = "YOUR_BUILDER_SECP256K1_PUBKEY_HERE"
-
 [[block_builder.authorized_builders]]
 name = "test-builder"
 pubkey = "027a841b18fdeb6e1c841fdf81095f83a604d6aa7820e8309da4bf01a01350e115"

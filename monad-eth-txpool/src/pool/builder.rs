@@ -98,8 +98,6 @@ pub struct BuilderTxBundleRequest {
 pub struct BlockBuilderTxPool<ST: CertificateSignatureRecoverable> {
     /// Raw transactions ready for inclusion (validation happens at proposal time)
     transactions: VecDeque<Recovered<TxEnvelope>>,
-    /// Maximum number of builder transactions to store
-    max_size: usize,
     /// Authorized builder public keys
     authorized_builders: HashSet<CertificateSignaturePubKey<ST>>,
     /// Maximum bundle age for replay protection
@@ -113,13 +111,11 @@ pub struct BlockBuilderTxPool<ST: CertificateSignatureRecoverable> {
 impl<ST: CertificateSignatureRecoverable> BlockBuilderTxPool<ST> {
     /// Create a new block builder transaction pool
     pub fn new(
-        max_size: usize,
         authorized_builders: Vec<CertificateSignaturePubKey<ST>>,
         max_bundle_age_secs: u64,
     ) -> Self {
         Self {
-            transactions: VecDeque::with_capacity(max_size),
-            max_size,
+            transactions: VecDeque::new(),
             authorized_builders: authorized_builders.into_iter().collect(),
             max_bundle_age_secs,
             recent_bundles: HashMap::new(),
@@ -213,15 +209,10 @@ impl<ST: CertificateSignatureRecoverable> BlockBuilderTxPool<ST> {
 
         // 6. Store raw transactions (validation happens later in existing pipeline)
         debug!("Step 5: Adding transactions to pool...");
-        debug!("  Current pool size: {}/{}", self.transactions.len(), self.max_size);
+        debug!("  Current pool size: {}", self.transactions.len());
         
         let mut added = 0;
         for (i, tx) in bundle.transactions.into_iter().enumerate() {
-            if self.transactions.len() >= self.max_size {
-                debug!("  Pool full, removing oldest transaction to make room");
-                self.transactions.pop_front();
-            }
-
             debug!("  Adding transaction {}: {:?}", i, tx.tx_hash());
             // Store raw transaction - validation happens when creating proposal
             self.transactions.push_back(tx);
@@ -370,7 +361,6 @@ mod tests {
         )));
         
         let mut pool = BlockBuilderTxPool::new(
-            100,
             vec![authorized_keypair.pubkey()],
             300,
         );
@@ -406,7 +396,7 @@ mod tests {
     #[test]
     fn test_replay_protection() {
         let keypair = make_test_keypair(TEST_SECRET);
-        let mut pool = BlockBuilderTxPool::new(100, vec![keypair.pubkey()], 300);
+        let mut pool = BlockBuilderTxPool::new(vec![keypair.pubkey()], 300);
         
         let timestamp = current_timestamp();
         let bundle = SignedBuilderTxBundle {
@@ -429,7 +419,7 @@ mod tests {
     #[test]
     fn test_timestamp_validation() {
         let keypair = make_test_keypair(TEST_SECRET);
-        let mut pool = BlockBuilderTxPool::new(100, vec![keypair.pubkey()], 300);
+        let mut pool = BlockBuilderTxPool::new(vec![keypair.pubkey()], 300);
         
         let current_time = current_timestamp();
         

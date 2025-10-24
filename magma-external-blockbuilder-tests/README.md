@@ -4,15 +4,38 @@ This test suite verifies that transactions submitted via `monad_submitBuilderBun
 
 ## Overview
 
-The test suite performs the following for each test iteration:
+The test suite includes two main tests:
+
+### 1. Bundle Ordering Test
+
+This test verifies that transactions within a bundle maintain their specified order:
+
+1. **Creates 6 transactions:**
+   - 3 from Account 1 with sequential nonces (n, n+1, n+2)
+   - 3 from Account 2 with sequential nonces (m, m+1, m+2)
+   - Interleaved in the bundle: acc1[0], acc2[0], acc1[1], acc2[1], acc1[2], acc2[2]
+
+2. **Submission:**
+   - All 6 transactions submitted in a single bundle via `monad_submitBuilderBundle`
+
+3. **Verification:**
+   - Waits for all transactions to be mined
+   - Verifies all 6 transactions appear in the same block
+   - Verifies transactions appear in sequential indices matching the bundle order
+   - Reports success or failure with detailed transaction positions
+
+### 2. Bundle Priority Test (10 iterations)
+
+This test verifies that builder bundles are prioritized over normal transactions:
 
 1. **Creates two transactions:**
    - `tx1` (normal): Submitted via standard `eth_sendRawTransaction`
    - `tx2` (builder bundle): Submitted via `monad_submitBuilderBundle`
 
 2. **Submission order:**
-   - `tx2` is submitted FIRST via the builder bundle endpoint
-   - `tx1` is submitted SECOND via the normal RPC endpoint
+   - `tx1` is submitted FIRST via the normal RPC endpoint
+   - `tx2` is submitted SECOND via the builder bundle endpoint (without waiting for the normal tx response)
+   - This verifies that builder bundles are prioritized even when they arrive after normal transactions
 
 3. **Verification:**
    - Waits for both transactions to be mined
@@ -82,12 +105,18 @@ The test will automatically:
 - Run 5 test iterations (configurable)
 - Display detailed results and summary statistics
 
-### With Logging
+### Verbose Logging
 
-To see detailed debug logs:
+By default, only high-level test results are shown. To see detailed debug logs including transaction hashes, nonces, and submission details:
 
 ```bash
 RUST_LOG=debug cargo run
+```
+
+To see all trace-level logs:
+
+```bash
+RUST_LOG=trace cargo run
 ```
 
 ### Running Multiple Iterations
@@ -102,10 +131,16 @@ let num_tests = 10; // Change this number
 
 ✅ **Success Criteria:**
 
+**Bundle Ordering Test:**
+- All 6 transactions should appear in the same block
+- Transaction indices should be sequential and match the bundle order
+- The test passes if all transactions maintain the exact order: acc1[0], acc2[0], acc1[1], acc2[1], acc1[2], acc2[2]
+
+**Bundle Priority Test:**
 - When both transactions land in the same block, the builder bundle transaction (`tx2`) should have a lower transaction index than the normal transaction (`tx1`)
 - Success rate should be 100% for same-block tests
 
-⚠️ **Note on Timing:**
+⚠️ **Note on Timing (Priority Test):**
 
 Due to block production timing, not all test iterations will have both transactions in the same block. This is expected behavior. The test accounts for this by:
 
@@ -115,25 +150,69 @@ Due to block production timing, not all test iterations will have both transacti
 
 ## Test Output
 
-The test provides detailed output including:
+### Default Output (INFO level)
+
+The test provides clean, high-level output:
 
 ```
+========================================
+Magma External Block Builder Tests
+========================================
+
+Checking RPC connectivity at http://localhost:8080...
+✓ RPC is responding
+✓ Chain ID: 20143 (0x4eaf)
+
+Starting Monad Builder Bundle Transaction Ordering Tests
+RPC URL: http://localhost:8080
+Expected Chain ID: 20143
+
+========== Builder Bundle Connectivity Test ==========
+Testing if builder bundles are being accepted by the node...
+
+✓ Builder bundle connectivity test PASSED!
+  The node is accepting and mining builder bundles.
+
+========== Bundle Ordering Test ==========
+Testing that transactions in a bundle maintain their specified order...
+
+All 6 transactions appeared in block 3725
+All transactions maintained correct sequential order
+✓ Bundle ordering test PASSED!
+  All transactions appeared in the correct order.
+
+✓ Test 1: Builder tx first (block 3727, indices: builder=0, normal=1)
+✓ Test 2: Builder tx first (block 3730, indices: builder=0, normal=1)
+...
+✓ Test 10: Builder tx first (block 3754, indices: builder=0, normal=1)
+
 ========================================
 TEST SUMMARY
 ========================================
 
 Total tests run: 10
-Tests with both txs in same block: 7
+Tests with both txs in same block: 10
 Tests where builder tx came first: 10
-Tests where builder tx came first IN SAME BLOCK: 7
+Tests where builder tx came first IN SAME BLOCK: 10
 
 Detailed Results:
 Test   Normal Blk   Builder Blk  Normal Idx Builder Idx Builder 1st?
 ----------------------------------------------------------------------
-1      100          100          1          0           YES ✓
-2      101          101          1          0           YES ✓
+1      3727         3727         1          0          YES ✓
+2      3730         3730         1          0          YES ✓
 ...
+
+✓ ALL builder bundle transactions appeared first in their blocks!
 ```
+
+### Debug Output (RUST_LOG=debug)
+
+With debug logging enabled, you'll see additional details including:
+- Account nonces before each test
+- Transaction hashes for all submissions
+- Block and index information for each transaction
+- Bundle signature details
+- Detailed verification steps
 
 ## Architecture
 
@@ -180,7 +259,7 @@ If you see "Builder bundle submission failed" errors, check:
 If no tests have both transactions in the same block:
 
 1. Try increasing the number of test iterations (edit `num_tests` in `src/main.rs`)
-2. The test includes a 100ms delay between builder bundle and normal transaction submission - you can adjust this timing
+2. The normal transaction is submitted immediately before the builder bundle (without waiting for response) - both submissions happen in rapid succession to maximize the chance they're processed for the same block
 
 ## Configuration
 

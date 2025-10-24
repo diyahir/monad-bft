@@ -26,17 +26,6 @@ pub struct BlockBuilderConfig<P: PubKey> {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Maximum number of block builder transactions per block
-    #[serde(default = "default_max_builder_txs")]
-    pub max_builder_txs: usize,
-
-    /// Maximum number of builder transactions to store in memory
-    #[serde(default = "default_max_pool_size")]
-    pub max_pool_size: usize,
-
-    /// API endpoint for receiving builder transactions (optional)
-    pub api_endpoint: Option<String>,
-
     /// Authorized block builder identities
     #[serde(default)]
     #[serde(bound = "P: PubKey")]
@@ -65,22 +54,12 @@ impl<P: PubKey> Default for BlockBuilderConfig<P> {
     fn default() -> Self {
         Self {
             enabled: false,
-            max_builder_txs: default_max_builder_txs(),
-            max_pool_size: default_max_pool_size(),
-            api_endpoint: None,
             authorized_builders: Vec::new(),
             max_bundle_age_secs: default_max_bundle_age_secs(),
         }
     }
 }
 
-fn default_max_builder_txs() -> usize {
-    1000
-}
-
-fn default_max_pool_size() -> usize {
-    5000
-}
 
 fn default_max_bundle_age_secs() -> u64 {
     300 // 5 minutes
