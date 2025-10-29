@@ -87,7 +87,7 @@ async fn setup_txpool_executor_with_client() -> (
         GENESIS_ROUND,
         GENESIS_TIMESTAMP as u64,
         true,
-        monad_node_config::BlockBuilderConfig::default(),
+        monad_node_config::ExternalBlockBuilderConfig::default(),
     )
     .unwrap();
 

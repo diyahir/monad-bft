@@ -69,6 +69,7 @@ pub enum EthTxPoolDropReason {
     PoolFull,
     PoolNotReady,
     Internal(EthTxPoolInternalDropReason),
+    ConflictWithBuilderBundle,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +107,9 @@ impl EthTxPoolDropReason {
             }
             EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
             EthTxPoolDropReason::Internal(_) => "Internal error",
+            EthTxPoolDropReason::ConflictWithBuilderBundle => {
+                "Transaction conflicts with builder bundle"
+            }
         }
         .to_owned()
     }

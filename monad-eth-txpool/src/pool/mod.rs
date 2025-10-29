@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::{Recovered, Transaction}, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
@@ -45,11 +45,11 @@ use tracing::{debug, info, warn};
 
 pub use self::transaction::max_eip2718_encoded_length;
 use self::{
-    builder::BlockBuilderTxPool, pending::PendingTxMap, tracked::TrackedTxMap,
+    builder::ExternalBuilderTxPool, pending::PendingTxMap, tracked::TrackedTxMap,
     transaction::ValidEthTransaction,
 };
 use crate::EthTxPoolEventTracker;
-use monad_node_config::BlockBuilderConfig;
+use monad_node_config::ExternalBlockBuilderConfig;
 
 pub mod builder;
 mod pending;
@@ -75,10 +75,10 @@ where
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT, CCT, CRT>,
 
-    /// Block builder transaction pool for priority transactions
-    builder_pool: BlockBuilderTxPool<ST>,
-    /// Configuration for block builder functionality
-    builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+    /// External block builder transaction pool for priority transactions
+    external_builder_pool: ExternalBuilderTxPool<ST>,
+    /// Configuration for external block builder functionality
+    external_builder_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
 
     chain_id: u64,
     chain_revision: CRT,
@@ -103,26 +103,26 @@ where
         chain_revision: CRT,
         execution_revision: MonadExecutionRevision,
         do_local_insert: bool,
-        builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+        external_builder_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) -> Self {
         // Extract authorized builder public keys
-        let authorized_builders = builder_config
+        let authorized_builders = external_builder_config
             .authorized_builders
             .iter()
             .map(|builder| builder.pubkey)
             .collect();
 
-        let builder_pool = BlockBuilderTxPool::new(
+        let external_builder_pool = ExternalBuilderTxPool::new(
             authorized_builders,
-            builder_config.max_bundle_age_secs,
+            external_builder_config.max_bundle_age_secs,
         );
 
         Self {
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
 
-            builder_pool,
-            builder_config,
+            external_builder_pool,
+            external_builder_config,
 
             chain_id,
             chain_revision,
@@ -276,24 +276,33 @@ where
     /// Submit a cryptographically signed bundle of transactions from a block builder
     pub fn submit_signed_builder_bundle(
         &mut self,
-        bundle: crate::pool::builder::SignedBuilderTxBundle<ST>,
+        bundle: crate::pool::builder::SignedExternalBuilderBundle<ST>,
         current_time: u64,
-    ) -> Result<usize, crate::pool::builder::BuilderError> {
-        if !self.builder_config.enabled {
-            return Err(crate::pool::builder::BuilderError::NotEnabled);
+    ) -> Result<usize, crate::pool::builder::ExternalBuilderError> {
+        if !self.external_builder_config.enabled {
+            return Err(crate::pool::builder::ExternalBuilderError::NotEnabled);
         }
 
-        // Add the bundle to the builder pool
-        self.builder_pool.add_signed_bundle(bundle, current_time)
+        // Add the bundle to the builder pool with comprehensive validation
+        let chain_params = self.chain_revision.chain_params();
+        let execution_params = self.execution_revision.execution_chain_params();
+        
+        self.external_builder_pool.add_signed_bundle(
+            bundle,
+            current_time,
+            self.chain_id,
+            chain_params,
+            execution_params,
+        )
     }
 
     /// Update the authorized block builders list
     pub fn update_authorized_builders(
         &mut self,
-        new_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+        new_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) {
         // Update the configuration
-        self.builder_config = new_config.clone();
+        self.external_builder_config = new_config.clone();
 
         // Extract authorized builder public keys and update the pool
         let authorized_builders = new_config
@@ -302,12 +311,12 @@ where
             .map(|builder| builder.pubkey)
             .collect();
 
-        self.builder_pool.update_authorized_builders(authorized_builders);
+        self.external_builder_pool.update_authorized_builders(authorized_builders);
     }
 
     /// Get current block builder pool statistics (for monitoring/debugging)
     pub fn get_builder_pool_stats(&self) -> (usize, bool) {
-        (self.builder_pool.len(), self.builder_config.enabled)
+        (self.external_builder_pool.len(), self.external_builder_config.enabled)
     }
 
     pub fn create_proposal(
@@ -386,31 +395,61 @@ where
             .map(|tx| tx.length() as u64)
             .sum();
 
-        // Get block builder transactions (NEW)
-        let builder_transactions = if self.builder_config.enabled {
+        // Get block builder transactions with pre-calculated metadata
+        let (mut builder_transactions, builder_metadata) = if self.external_builder_config.enabled {
             let remaining_limit = tx_limit.saturating_sub(system_transactions.len());
             
             // Clean up old bundles periodically
-            self.builder_pool.cleanup_old_bundles(timestamp_seconds);
+            self.external_builder_pool.cleanup_old_bundles(timestamp_seconds);
             
-            let builder_txs = self.builder_pool.get_transactions(remaining_limit);
+            let (builder_txs, metadata) = self.external_builder_pool.get_transactions(remaining_limit);
             
             debug!(
                 builder_transactions_count = builder_txs.len(),
                 remaining_limit = remaining_limit,
+                total_gas = metadata.total_gas,
+                total_size = metadata.total_size,
                 "including block builder transactions in proposal"
             );
             
-            // Raw transactions are already in the correct format
-            builder_txs
+            (builder_txs, metadata)
         } else {
-            Vec::new()
+            (Vec::new(), crate::pool::builder::ExternalBuilderPoolMetadata::default())
         };
         
-        let builder_txs_size: u64 = builder_transactions
-            .iter()
-            .map(|tx| tx.length() as u64)
-            .sum();
+        // Defense in depth: Check for any duplicate nonces
+        // This should never happen due to validation, but provides safety
+        let original_builder_count = builder_transactions.len();
+        let builder_nonce_map = builder_metadata.nonce_map;
+        
+        builder_transactions.retain(|tx| {
+            let key = (Address::from(*tx.signer()), tx.tx().nonce());
+            if !builder_nonce_map.contains_key(&key) {
+                tracing::error!(
+                    "CRITICAL: Transaction in builder pool missing from nonce map! \
+                     sender={:?}, nonce={}",
+                    tx.signer(), tx.tx().nonce()
+                );
+                event_tracker.drop(
+                    *tx.tx_hash(),
+                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError)
+                );
+                false
+            } else {
+                true
+            }
+        });
+        
+        if builder_transactions.len() < original_builder_count {
+            tracing::error!(
+                "Removed {} transactions with metadata mismatch from builder pool",
+                original_builder_count - builder_transactions.len()
+            );
+        }
+        
+        // Use pre-calculated metadata
+        let builder_txs_size = builder_metadata.total_size;
+        let builder_txs_gas = builder_metadata.total_gas;
 
         // Get regular user transactions with adjusted limits
         let remaining_tx_limit = tx_limit
@@ -419,14 +458,16 @@ where
         let remaining_byte_limit = proposal_byte_limit
             .saturating_sub(system_txs_size)
             .saturating_sub(builder_txs_size);
+        let remaining_gas_limit = proposal_gas_limit
+            .saturating_sub(builder_txs_gas);
 
-        let user_transactions = self.tracked.create_proposal(
+        let mut user_transactions = self.tracked.create_proposal(
             event_tracker,
             self.chain_id,
             proposed_seq_num,
             base_fee,
             remaining_tx_limit,
-            proposal_gas_limit,
+            remaining_gas_limit,
             remaining_byte_limit,
             block_policy,
             extending_blocks.iter().collect(),
@@ -435,11 +476,40 @@ where
             &self.chain_revision,
             &self.execution_revision,
         )?;
+        
+        // Filter out user transactions that conflict with builder bundle
+        // Builder transactions always have priority
+        let original_user_count = user_transactions.len();
+        user_transactions.retain(|tx| {
+            let key = (Address::from(*tx.signer()), tx.tx().nonce());
+            if builder_nonce_map.contains_key(&key) {
+                warn!(
+                    "Removing user transaction {:?} (sender={:?}, nonce={}) - conflicts with builder bundle",
+                    tx.tx_hash(), tx.signer(), tx.tx().nonce()
+                );
+                event_tracker.drop(
+                    *tx.tx_hash(),
+                    EthTxPoolDropReason::ConflictWithBuilderBundle
+                );
+                false
+            } else {
+                true
+            }
+        });
+        
+        let filtered_user_count = user_transactions.len();
+        if filtered_user_count < original_user_count {
+            info!(
+                "Filtered {} user transactions due to conflicts with builder bundle",
+                original_user_count - filtered_user_count
+            );
+        }
 
         info!(
             system_txs = system_transactions.len(),
             builder_txs = builder_transactions.len(),
             user_txs = user_transactions.len(),
+            filtered_user_txs = original_user_count - filtered_user_count,
             total_txs = system_transactions.len() + builder_transactions.len() + user_transactions.len(),
             "created proposal with transaction ordering: system -> builder -> user"
         );
@@ -706,7 +776,7 @@ where
             MockChainRevision::DEFAULT,
             MonadExecutionRevision::LATEST,
             true,
-            BlockBuilderConfig::default(), // Disabled by default for testing
+            ExternalBlockBuilderConfig::default(), // Disabled by default for testing
         )
     }
 }

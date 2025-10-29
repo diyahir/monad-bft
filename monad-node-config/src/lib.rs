@@ -21,7 +21,7 @@ use monad_eth_types::{serde::deserialize_eth_address_from_str, EthExecutionProto
 use serde::Deserialize;
 
 pub use self::{
-    block_builder::{BlockBuilderConfig, BlockBuilderIdentityConfig},
+    external_block_builder::{ExternalBlockBuilderConfig, ExternalBlockBuilderIdentityConfig},
     bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig},
     fullnode::{FullNodeConfig, FullNodeIdentityConfig},
     network::NodeNetworkConfig,
@@ -29,7 +29,7 @@ pub use self::{
     sync_peers::{BlockSyncPeersConfig, StateSyncPeersConfig, SyncPeerIdentityConfig},
 };
 
-mod block_builder;
+mod external_block_builder;
 mod bootstrap;
 mod fullnode;
 mod network;
@@ -71,9 +71,9 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
 
     pub fullnode_raptorcast: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
 
-    /// Block builder configuration for MEV transaction ordering
-    #[serde(default = "default_block_builder_config")]
-    pub block_builder: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+    /// External block builder configuration for MEV transaction ordering
+    #[serde(default = "default_external_block_builder_config")]
+    pub external_block_builder: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////
@@ -97,6 +97,6 @@ pub type ForkpointConfig = monad_consensus_types::checkpoint::Checkpoint<
 #[cfg(feature = "crypto")]
 pub type MonadNodeConfig = NodeConfig<SignatureType>;
 
-fn default_block_builder_config<P: PubKey>() -> BlockBuilderConfig<P> {
-    BlockBuilderConfig::default()
+fn default_external_block_builder_config<P: PubKey>() -> ExternalBlockBuilderConfig<P> {
+    ExternalBlockBuilderConfig::default()
 }

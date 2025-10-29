@@ -26,7 +26,7 @@ use std::{
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
-use monad_eth_txpool::builder::SignedBuilderTxBundle;
+use monad_eth_txpool::builder::SignedExternalBuilderBundle;
 use monad_eth_txpool_types::BuilderBundleIpcMessage;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -37,7 +37,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
-use monad_node_config::BlockBuilderConfig;
+use monad_node_config::ExternalBlockBuilderConfig;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -94,8 +94,8 @@ where
     _phantom: PhantomData<CRT>,
 }
 
-/// Convert IPC builder bundle message to SignedBuilderTxBundle
-fn convert_builder_bundle<ST>(bundle: BuilderBundleIpcMessage) -> Result<SignedBuilderTxBundle<ST>, String>
+/// Convert IPC builder bundle message to SignedExternalBuilderBundle
+fn convert_builder_bundle<ST>(bundle: BuilderBundleIpcMessage) -> Result<SignedExternalBuilderBundle<ST>, String>
 where
     ST: CertificateSignatureRecoverable,
 {
@@ -162,7 +162,7 @@ where
     
     debug!("Successfully converted bundle with {} transactions", recovered_transactions.len());
     
-    Ok(SignedBuilderTxBundle {
+    Ok(SignedExternalBuilderBundle {
         transactions: recovered_transactions,
         signature,
         signer,
@@ -190,7 +190,7 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
-        builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+        builder_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) -> io::Result<
         TokioTaskUpdater<
             TxPoolCommand<

@@ -200,6 +200,11 @@ impl<'a> EthTxPoolEventTracker<'a> {
                     .drop_internal_not_ready
                     .fetch_add(1, Ordering::SeqCst);
             }
+            EthTxPoolDropReason::ConflictWithBuilderBundle => {
+                self.metrics
+                    .drop_existing_higher_priority
+                    .fetch_add(1, Ordering::SeqCst);
+            }
         }
 
         self.events

@@ -23,12 +23,12 @@ use super::{
     state::{EthTxPoolBridgeStateView, TxStatusSender},
     TxStatus,
 };
-use monad_eth_txpool::builder::BuilderTxBundleRequest;
+use monad_eth_txpool::builder::ExternalBuilderBundleRequest;
 
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
     tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
-    builder_bundle_sender: Sender<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>,
+    builder_bundle_sender: Sender<(ExternalBuilderBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>,
     tx_inflight: Arc<()>,
 
     state: EthTxPoolBridgeStateView,
@@ -37,7 +37,7 @@ pub struct EthTxPoolBridgeClient {
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
         tx_sender: Sender<(TxEnvelope, TxStatusSender)>,
-        builder_bundle_sender: Sender<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>,
+        builder_bundle_sender: Sender<(ExternalBuilderBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         Self {
@@ -63,9 +63,9 @@ impl EthTxPoolBridgeClient {
 
     pub fn try_send_builder_bundle(
         &self,
-        bundle: BuilderTxBundleRequest,
+        bundle: ExternalBuilderBundleRequest,
         status_send: tokio::sync::oneshot::Sender<Result<usize, String>>,
-    ) -> Result<(), TrySendError<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>> {
+    ) -> Result<(), TrySendError<(ExternalBuilderBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>> {
         self.builder_bundle_sender.try_send((bundle, status_send))
     }
 

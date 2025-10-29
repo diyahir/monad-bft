@@ -88,7 +88,7 @@ max_mbps = 1000
 #########################################################
 # External Block Builder Configuration
 #########################################################
-[block_builder]
+[external_block_builder]
 # Enable block builder transaction prioritization
 enabled = true
 
@@ -96,6 +96,6 @@ enabled = true
 max_bundle_age_secs = 300
 
 # Authorized block builder identities
-[[block_builder.authorized_builders]]
+[[external_block_builder.authorized_builders]]
 name = "test-builder"
 pubkey = "027a841b18fdeb6e1c841fdf81095f83a604d6aa7820e8309da4bf01a01350e115"

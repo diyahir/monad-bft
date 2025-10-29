@@ -337,7 +337,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             // TODO(andr-dev): Use timestamp from last commit in ledger
             0,
             true,
-            node_state.node_config.block_builder.clone(),
+            node_state.node_config.external_block_builder.clone(),
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(

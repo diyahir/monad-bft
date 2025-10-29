@@ -437,8 +437,8 @@ pub async fn monad_submitBuilderBundle_impl(
 
     debug!("Successfully parsed all bundle parameters, sending to txpool...");
 
-    // Create the builder bundle request
-    let bundle_request = monad_eth_txpool::builder::BuilderTxBundleRequest {
+    // Create the external builder bundle request
+    let bundle_request = monad_eth_txpool::builder::ExternalBuilderBundleRequest {
         transactions: params.transactions,
         signature: params.signature,
         signer: params.signer,

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 #[serde(bound = "P: PubKey")]
-pub struct BlockBuilderConfig<P: PubKey> {
+pub struct ExternalBlockBuilderConfig<P: PubKey> {
     /// Enable block builder transaction prioritization
     #[serde(default)]
     pub enabled: bool,
@@ -29,7 +29,7 @@ pub struct BlockBuilderConfig<P: PubKey> {
     /// Authorized block builder identities
     #[serde(default)]
     #[serde(bound = "P: PubKey")]
-    pub authorized_builders: Vec<BlockBuilderIdentityConfig<P>>,
+    pub authorized_builders: Vec<ExternalBlockBuilderIdentityConfig<P>>,
 
     /// Maximum age of builder bundles in seconds (replay protection)
     #[serde(default = "default_max_bundle_age_secs")]
@@ -39,7 +39,7 @@ pub struct BlockBuilderConfig<P: PubKey> {
 /// Configuration for an authorized block builder identity
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct BlockBuilderIdentityConfig<P: PubKey> {
+pub struct ExternalBlockBuilderIdentityConfig<P: PubKey> {
     /// Human-readable name for this builder (optional)
     pub name: Option<String>,
 
@@ -50,7 +50,7 @@ pub struct BlockBuilderIdentityConfig<P: PubKey> {
     pub pubkey: P,
 }
 
-impl<P: PubKey> Default for BlockBuilderConfig<P> {
+impl<P: PubKey> Default for ExternalBlockBuilderConfig<P> {
     fn default() -> Self {
         Self {
             enabled: false,
