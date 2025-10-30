@@ -14,9 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     marker::PhantomData,
-    net::SocketAddr,
     pin::{pin, Pin},
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -28,14 +27,13 @@ pub mod group_message;
 mod publisher;
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::Bytes;
 use client::Client;
 use futures::{Future, Stream};
 use group_message::FullNodesGroupMessage;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter, UnicastMsg};
+use monad_dataplane::{udp::segment_size_for_mtu, DataplaneWriter};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
@@ -46,12 +44,12 @@ use rand_chacha::ChaCha8Rng;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, error, trace, warn};
 
-use super::{
+use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
-    udp,
+    packet::{RetrofitResult as _, UdpMessageBatcher},
     util::{BuildTarget, FullNodes, Group, Redundancy},
-    RaptorCastEvent,
+    OwnedMessageBuilder, RaptorCastEvent, UNICAST_MSG_BATCH_SIZE,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -83,15 +81,14 @@ where
     role: Role<ST>,
 
     // Args for encoding outbound (validator -> full-node) messages
-    signing_key: Arc<ST::KeyPairType>, // for re-signing app messages
-    raptor10_redundancy: Redundancy,
     curr_epoch: Epoch,
 
-    mtu: u16,
     dataplane_writer: DataplaneWriter,
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    message_builder: OwnedMessageBuilder<ST, PD>,
 
     channel_from_primary: UnboundedReceiver<FullNodesGroupMessage<ST>>,
+    #[expect(unused)]
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE, M)>,
 }
@@ -146,14 +143,19 @@ where
                 raptor10_redundancy
             );
         }
+        let redundancy = Redundancy::from_f32(raptor10_redundancy)
+            .expect("secondary raptor10_redundancy doesn't fit");
+
+        let message_builder =
+            OwnedMessageBuilder::new(config.shared_key, peer_discovery_driver.clone())
+                .segment_size(segment_size_for_mtu(config.mtu))
+                .epoch_no(current_epoch)
+                .redundancy(redundancy);
 
         Self {
             role,
-            signing_key: config.shared_key.clone(),
-            raptor10_redundancy: Redundancy::from_f32(raptor10_redundancy)
-                .expect("secondary raptor10_redundancy doesn't fit"),
             curr_epoch: current_epoch,
-            mtu: config.mtu,
+            message_builder,
             dataplane_writer,
             peer_discovery_driver,
             channel_from_primary,
@@ -162,58 +164,10 @@ where
         }
     }
 
-    fn udp_build(
-        epoch: &Epoch,
-        build_target: BuildTarget<ST>,
-        outbound_message: Bytes,
-        mtu: u16,
-        signing_key: &Arc<ST::KeyPairType>,
-        redundancy: Redundancy,
-        known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-    ) -> UnicastMsg {
-        let outbound_message_len = outbound_message.len();
-        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
-            warn!(?elapsed, outbound_message_len, "long time to udp_build")
-        });
-        let segment_size = segment_size_for_mtu(mtu);
-
-        let unix_ts_ms = std::time::UNIX_EPOCH
-            .elapsed()
-            .expect("time went backwards")
-            .as_millis()
-            .try_into()
-            .expect("unix epoch doesn't fit in u64");
-
-        trace!(
-            ?mtu,
-            ?outbound_message_len,
-            ?redundancy,
-            ?segment_size,
-            "RaptorCastSecondary::udp_build()"
-        );
-
-        let messages = udp::build_messages::<ST>(
-            signing_key,
-            segment_size,
-            outbound_message,
-            redundancy,
-            epoch.0,
-            unix_ts_ms,
-            build_target,
-            known_addresses,
-        );
-
-        UnicastMsg {
-            msgs: messages,
-            stride: segment_size,
-        }
-    }
-
     fn send_single_msg(
         &self,
         group_msg: FullNodesGroupMessage<ST>,
         dest_node: &NodeId<CertificateSignaturePubKey<ST>>,
-        known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     ) {
         trace!(
             ?dest_node,
@@ -229,23 +183,27 @@ where
                 return;
             }
         };
-        let udp_messages = Self::udp_build(
-            &self.curr_epoch,
-            BuildTarget::<ST>::PointToPoint(dest_node),
-            msg_bytes,
-            self.mtu,
-            &self.signing_key,
-            self.raptor10_redundancy,
-            known_addresses,
-        );
-        self.dataplane_writer.udp_write_unicast(udp_messages);
+
+        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+            warn!(
+                ?elapsed,
+                app_msg_len = msg_bytes.len(),
+                "long time to build message"
+            )
+        });
+        let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+            self.dataplane_writer.udp_write_unicast(rc_chunks)
+        });
+        let build_target = BuildTarget::<ST>::PointToPoint(dest_node);
+        self.message_builder
+            .build_into(&msg_bytes, &build_target, &mut sink)
+            .unwrap_log_on_error(&msg_bytes, &build_target);
     }
 
     fn send_group_msg(
         &self,
         group_msg: FullNodesGroupMessage<ST>,
         dest_node_ids: FullNodes<CertificateSignaturePubKey<ST>>,
-        known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     ) {
         trace!(
             ?dest_node_ids,
@@ -258,7 +216,7 @@ where
         let group_msg = self.try_fill_name_records(group_msg, &dest_node_ids);
         // Can udp_write_broadcast() be used? Optimize later
         for nid in dest_node_ids.list {
-            self.send_single_msg(group_msg.clone(), &nid, known_addresses);
+            self.send_single_msg(group_msg.clone(), &nid);
         }
     }
 
@@ -308,6 +266,9 @@ where
                 Self::Command::Publish { .. } => {
                     panic!("Command routed to secondary RaptorCast: Publish")
                 }
+                Self::Command::PublishWithPriority { .. } => {
+                    panic!("Command routed to secondary RaptorCast: PublishWithPriority")
+                }
                 Self::Command::AddEpochValidatorSet { .. } => {
                     panic!("Command routed to secondary RaptorCast: AddEpochValidatorSet")
                 }
@@ -356,19 +317,19 @@ where
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
                         self.curr_epoch = epoch;
+                        self.message_builder.set_epoch_no(epoch);
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self
                             .peer_discovery_driver
                             .lock()
                             .unwrap()
-                            .get_secondary_fullnode_addrs();
-                        let full_nodes_vec: Vec<_> = full_nodes.keys().copied().collect();
+                            .get_secondary_fullnodes();
                         trace!(
                             "RaptorCastSecondary updating {} full nodes from PeerDiscovery",
-                            full_nodes_vec.len()
+                            full_nodes.len()
                         );
-                        publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes_vec));
+                        publisher.upsert_peer_disc_full_nodes(FullNodes::new(full_nodes));
 
                         if let Some((group_msg, full_nodes_set)) =
                             publisher.enter_round_and_step_until(round)
@@ -387,7 +348,7 @@ where
                                 );
                             }
 
-                            self.send_group_msg(group_msg, full_nodes_set, &full_nodes);
+                            self.send_group_msg(group_msg, full_nodes_set);
                         }
                     }
                 },
@@ -423,12 +384,6 @@ where
 
                     let build_target = BuildTarget::FullNodeRaptorCast(curr_group);
 
-                    let known_addresses = self
-                        .peer_discovery_driver
-                        .lock()
-                        .unwrap()
-                        .get_known_addresses();
-
                     let outbound_message = match OutboundRouterMessage::<OM, ST>::AppMessage(
                         message,
                     )
@@ -441,20 +396,25 @@ where
                         }
                     };
 
+                    let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            app_msg_len = outbound_message.len(),
+                            "long time to build message"
+                        )
+                    });
+                    let mut sink = UdpMessageBatcher::new(UNICAST_MSG_BATCH_SIZE, |rc_chunks| {
+                        // Send the raptorcast chunks via UDP to all peers in group
+                        self.dataplane_writer.udp_write_unicast(rc_chunks)
+                    });
+
                     // Split outbound_message into raptorcast chunks that we can
                     // send to full nodes.
-                    let rc_chunks: UnicastMsg = Self::udp_build(
-                        &epoch,
-                        build_target,
-                        outbound_message,
-                        self.mtu,
-                        &self.signing_key,
-                        self.raptor10_redundancy,
-                        &known_addresses,
-                    );
-
-                    // Send the raptorcast chunks via UDP to all peers in group
-                    self.dataplane_writer.udp_write_unicast(rc_chunks);
+                    self.message_builder
+                        .prepare()
+                        .epoch_no(epoch)
+                        .build_into(&outbound_message, &build_target, &mut sink)
+                        .unwrap_log_on_error(&outbound_message, &build_target);
                 }
             }
         }
@@ -541,6 +501,7 @@ where
 
                         ret = Poll::Ready(Some(
                             RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+                                confirm_msg.prepare.end_round,
                                 participated_nodes.into_iter().collect(),
                             )
                             .into(),
@@ -558,15 +519,7 @@ where
                 {
                     // Send back a response to the validator
                     trace!("RaptorCastSecondary sending back response for group message");
-
-                    let known_addresses = {
-                        this.peer_discovery_driver
-                            .lock()
-                            .unwrap()
-                            .get_known_addresses()
-                    };
-
-                    this.send_single_msg(response_msg, &validator_id, &known_addresses);
+                    this.send_single_msg(response_msg, &validator_id);
                 }
             }
         }

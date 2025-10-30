@@ -26,6 +26,8 @@ pub struct MockTriedb {
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
     code: String,
+    receipts: Vec<ReceiptWithLogIndex>,
+    transactions: Vec<TxEnvelopeWithSender>,
 }
 
 impl MockTriedb {
@@ -52,6 +54,14 @@ impl MockTriedb {
     pub fn set_code(&mut self, code: String) {
         self.code = code;
     }
+
+    pub fn set_receipts(&mut self, receipts: Vec<ReceiptWithLogIndex>) {
+        self.receipts = receipts;
+    }
+
+    pub fn set_transactions(&mut self, transactions: Vec<TxEnvelopeWithSender>) {
+        self.transactions = transactions;
+    }
 }
 
 impl Triedb for MockTriedb {
@@ -61,8 +71,8 @@ impl Triedb for MockTriedb {
     fn get_latest_voted_block_key(&self) -> BlockKey {
         BlockKey::Finalized(self.get_latest_finalized_block_key())
     }
-    fn get_block_key(&self, block_num: SeqNum) -> BlockKey {
-        BlockKey::Finalized(FinalizedBlockKey(block_num))
+    fn get_block_key(&self, block_num: SeqNum) -> Option<BlockKey> {
+        Some(BlockKey::Finalized(FinalizedBlockKey(block_num)))
     }
 
     fn get_state_availability(
@@ -105,7 +115,7 @@ impl Triedb for MockTriedb {
         _block_key: BlockKey,
         _txn_index: u64,
     ) -> impl std::future::Future<Output = Result<Option<ReceiptWithLogIndex>, String>> + Send {
-        ready(Ok(None))
+        ready(Ok(self.receipts.get(_txn_index as usize).cloned()))
     }
 
     fn get_receipts(
@@ -113,7 +123,7 @@ impl Triedb for MockTriedb {
         _block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync
     {
-        ready(Ok(vec![]))
+        ready(Ok(self.receipts.clone()))
     }
 
     fn get_transaction(
@@ -122,7 +132,7 @@ impl Triedb for MockTriedb {
         _txn_index: u64,
     ) -> impl std::future::Future<Output = Result<Option<TxEnvelopeWithSender>, String>> + Send
     {
-        ready(Ok(None))
+        ready(Ok(self.transactions.get(_txn_index as usize).cloned()))
     }
 
     fn get_transactions(
@@ -130,7 +140,7 @@ impl Triedb for MockTriedb {
         _block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync
     {
-        ready(Ok(vec![]))
+        ready(Ok(self.transactions.clone()))
     }
 
     fn get_block_header(

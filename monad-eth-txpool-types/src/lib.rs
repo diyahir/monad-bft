@@ -26,12 +26,8 @@ pub struct EthTxPoolEvent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolEventType {
-    /// The tx was inserted into the txpool's (pending/tracked) tx list.
-    Insert {
-        address: Address,
-        owned: bool,
-        tracked: bool,
-    },
+    /// The tx was inserted into the txpool.
+    Insert { address: Address, owned: bool },
 
     /// The tx was committed and is thus finalized.
     Commit,
@@ -87,7 +83,7 @@ impl EthTxPoolDropReason {
                 TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
                 TransactionError::EncodedLengthLimitExceeded => "Encoded length limit exceeded",
                 TransactionError::GasLimitTooLow => "Gas limit too low",
-                TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
+                TransactionError::GasLimitTooHigh => "Exceeds transaction gas limit",
                 TransactionError::UnsupportedTransactionType => "Unsupported transaction type",
                 TransactionError::AuthorizationListEmpty => "EIP7702 authorization list empty",
                 TransactionError::AuthorizationListLengthLimitExceeded => {
@@ -122,8 +118,7 @@ pub enum EthTxPoolEvictReason {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EthTxPoolSnapshot {
-    pub pending: HashSet<TxHash>,
-    pub tracked: HashSet<TxHash>,
+    pub txs: HashSet<TxHash>,
 }
 
 /// Wire format for submitting builder transaction bundles via IPC

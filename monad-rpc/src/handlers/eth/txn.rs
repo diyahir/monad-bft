@@ -152,7 +152,10 @@ fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema
     .into()
 }
 
-#[rpc(method = "eth_getLogs", ignore = "max_block_range")]
+#[rpc(
+    method = "eth_getLogs",
+    ignore = "max_block_range,use_eth_get_logs_index,dry_run_get_logs_index,max_finalized_block_cache_len"
+)]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 #[tracing::instrument(level = "debug", skip_all)]
@@ -188,7 +191,10 @@ pub struct MonadEthSendRawTransactionParams {
 
 const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
-#[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
+#[rpc(
+    method = "eth_sendRawTransaction",
+    ignore = "tx_pool,ipc,chain_id,allow_unprotected_txs"
+)]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
@@ -245,9 +251,7 @@ pub async fn monad_eth_sendRawTransaction(
                     TxStatus::Dropped { reason } => {
                         return Err(JsonRpcError::custom(reason.as_user_string()))
                     }
-                    TxStatus::Pending | TxStatus::Tracked | TxStatus::Committed => {
-                        return Ok(hash.to_string())
-                    }
+                    TxStatus::Tracked | TxStatus::Committed => return Ok(hash.to_string()),
                     TxStatus::Unknown => {
                         error!("txpool bridge sent unknown status");
                     }

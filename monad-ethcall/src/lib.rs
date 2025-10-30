@@ -29,10 +29,9 @@ use bindings::monad_eth_call_result;
 use futures::channel::oneshot::{channel, Sender};
 use monad_chain_config::{
     ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
-    MONAD_TESTNET2_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
+    MONAD_TESTNET_CHAIN_ID,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -68,13 +67,25 @@ impl EthCallExecutor {
         let dbpath = CString::new(triedb_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
 
+        let low_pool = bindings::monad_eth_call_pool_config {
+            num_threads: low_pool_config.num_threads,
+            num_fibers: low_pool_config.num_fibers,
+            timeout_sec: low_pool_config.timeout_sec,
+            queue_limit: low_pool_config.queue_limit,
+        };
+        
+        let high_pool = bindings::monad_eth_call_pool_config {
+            num_threads: high_pool_config.num_threads,
+            num_fibers: high_pool_config.num_fibers,
+            timeout_sec: high_pool_config.timeout_sec,
+            queue_limit: high_pool_config.queue_limit,
+        };
+
         let eth_call_executor = unsafe {
             bindings::monad_eth_call_executor_create(
-                low_pool_config.num_threads,
-                low_pool_config.num_fibers,
+                low_pool,
+                high_pool,
                 node_lru_max_mem,
-                low_pool_config.timeout_sec,
-                high_pool_config.timeout_sec,
                 dbpath.as_c_str().as_ptr(),
             )
         };
@@ -199,7 +210,7 @@ pub async fn eth_call(
     sender: Address,
     block_number: u64,
     block_id: Option<[u8; 32]>,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     state_override_set: &StateOverrideSet,
     tracer: MonadTracer,
     gas_specified: bool,
@@ -298,7 +309,6 @@ pub async fn eth_call(
         MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
         MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
-        MONAD_TESTNET2_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET2,
         _ => {
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
@@ -316,15 +326,11 @@ pub async fn eth_call(
     let (send, recv) = channel();
     let sender_ctx = Box::new(SenderContext { sender: send });
 
-    // hold lock on executor while submitting the task
-    let executor_lock = eth_call_executor.lock().await;
-    let eth_call_executor = executor_lock.eth_call_executor;
-
     unsafe {
         let sender_ctx_ptr = Box::into_raw(sender_ctx);
 
         bindings::monad_eth_call_executor_submit(
-            eth_call_executor,
+            eth_call_executor.eth_call_executor,
             chain_config,
             rlp_encoded_tx.as_ptr(),
             rlp_encoded_tx.len(),
@@ -342,9 +348,6 @@ pub async fn eth_call(
             gas_specified,
         )
     };
-
-    // lock is dropped after the task has been submitted
-    drop(executor_lock);
 
     let result = match recv.await {
         Ok(r) => r,

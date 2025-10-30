@@ -361,6 +361,15 @@ where
             ConsensusMode::Live(consensus) => consensus.get_current_epoch(),
         }
     }
+
+    fn current_round(&self) -> Round {
+        match self {
+            ConsensusMode::Sync {
+                high_certificate, ..
+            } => high_certificate.round() + Round(1),
+            ConsensusMode::Live(consensus) => consensus.get_current_round(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1148,7 +1157,8 @@ where
                 ConfigEvent::KnownPeersUpdate(known_peers_update) => {
                     vec![Command::RouterCommand(RouterCommand::UpdatePeers {
                         peer_entries: known_peers_update.known_peers,
-                        pinned_nodes: known_peers_update.pinned_nodes,
+                        dedicated_full_nodes: known_peers_update.dedicated_full_nodes,
+                        prioritized_full_nodes: known_peers_update.prioritized_full_nodes,
                     })]
                 }
             },

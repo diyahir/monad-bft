@@ -33,16 +33,18 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::mock::NopDiscovery;
-use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     new_defaulted_raptorcast_for_tests,
+    packet::build_messages,
     raptorcast_secondary::group_message::FullNodesGroupMessage,
-    udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
+    udp::MAX_REDUNDANCY,
     util::{BuildTarget, EpochValidators, Group, Redundancy},
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake};
+use monad_types::{
+    Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake, UdpPriority,
+};
 use tokio::sync::mpsc::unbounded_channel;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -173,54 +175,6 @@ pub fn buffer_count_overflow() {
 
         std::thread::sleep(Duration::from_millis(1));
     }
-
-    // Wait for RaptorCast instance to catch up.
-    std::thread::sleep(Duration::from_millis(100));
-}
-
-// Try to crash the RaptorCast receive path by feeding it (part of) an oversized encoded
-// message.  A previous version of the RaptorCast receive path would unwrap() an Err when
-// it would receive an invalid (e.g. oversized) message for which ManagedDecoder::new()
-// would fail.
-#[test]
-pub fn oversized_message() {
-    let tx_addr = "127.0.0.1:10005".parse().unwrap();
-    let rx_addr = "127.0.0.1:10006".parse().unwrap();
-
-    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
-
-    let message: Bytes = vec![0; 4 * 1000].into();
-
-    let tx_socket = UdpSocket::bind(tx_addr).unwrap();
-
-    let validators = EpochValidators {
-        validators: BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]),
-    };
-
-    let epoch_validators = validators.view_without(vec![&tx_nodeid]);
-
-    let messages = build_messages_with_length::<SignatureType>(
-        &tx_keypair,
-        DEFAULT_SEGMENT_SIZE,
-        message,
-        ((SOURCE_SYMBOLS_MAX + 1) * usize::from(DEFAULT_SEGMENT_SIZE))
-            .try_into()
-            .unwrap(),
-        Redundancy::from_u8(2),
-        0, // epoch_no
-        0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
-        &known_addresses,
-    );
-
-    // Sending a single packet of an oversized message is sufficient to crash the
-    // receiver if it is vulnerable to this issue.
-    tx_socket
-        .send_to(
-            &messages[0].1[0..usize::from(DEFAULT_SEGMENT_SIZE)],
-            messages[0].0,
-        )
-        .unwrap();
 
     // Wait for RaptorCast instance to catch up.
     std::thread::sleep(Duration::from_millis(100));
@@ -485,7 +439,7 @@ where
             RaptorCastEvent::PeerManagerResponse(_peer_manager_response) => {
                 unimplemented!()
             }
-            RaptorCastEvent::SecondaryRaptorcastPeersUpdate(_event) => {
+            RaptorCastEvent::SecondaryRaptorcastPeersUpdate { .. } => {
                 unimplemented!()
             }
         }
@@ -668,4 +622,239 @@ async fn delete_expired_groups() {
 
     // expired group should be deleted
     assert!(rebroadcast_map.is_empty(), "Expected empty rebroadcast map");
+}
+
+#[tokio::test]
+async fn test_priority_messages() {
+    let tx_addr: SocketAddrV4 = "127.0.0.1:11000".parse().unwrap();
+    let rx_addr: SocketAddrV4 = "127.0.0.1:11001".parse().unwrap();
+
+    let mut tx_secret = [1u8; 32];
+    let mut rx_secret = [2u8; 32];
+    let tx_key = Arc::new(KeyPair::from_bytes(&mut tx_secret).unwrap());
+    let rx_key = Arc::new(KeyPair::from_bytes(&mut rx_secret).unwrap());
+
+    let tx_nodeid = NodeId::new(tx_key.pubkey());
+    let rx_nodeid = NodeId::new(rx_key.pubkey());
+
+    let known_addresses = HashMap::from([(tx_nodeid, tx_addr), (rx_nodeid, rx_addr)]);
+
+    let mut tx_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(tx_addr),
+        known_addresses.clone(),
+        tx_key.clone(),
+    );
+
+    let mut rx_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(rx_addr),
+        known_addresses.clone(),
+        rx_key.clone(),
+    );
+
+    let epoch = Epoch(0);
+    let validator_set = vec![(tx_nodeid, Stake::ONE), (rx_nodeid, Stake::ONE)];
+
+    tx_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    rx_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    const HIGH_PRIORITY_START: u32 = 1000;
+    const REGULAR_PRIORITY_START: u32 = 2000;
+    const MESSAGE_COUNT: usize = 100;
+    const MESSAGE_SIZE: usize = 10000;
+
+    for i in 0..MESSAGE_COUNT {
+        let high_priority_msg = MockMessage::new(HIGH_PRIORITY_START + i as u32, MESSAGE_SIZE);
+        tx_rc.exec(vec![RouterCommand::PublishWithPriority {
+            target: monad_types::RouterTarget::PointToPoint(rx_nodeid),
+            message: high_priority_msg,
+            priority: UdpPriority::High,
+        }]);
+    }
+
+    for i in 0..MESSAGE_COUNT {
+        let regular_priority_msg =
+            MockMessage::new(REGULAR_PRIORITY_START + i as u32, MESSAGE_SIZE);
+        tx_rc.exec(vec![RouterCommand::PublishWithPriority {
+            target: monad_types::RouterTarget::PointToPoint(rx_nodeid),
+            message: regular_priority_msg,
+            priority: UdpPriority::Regular,
+        }]);
+    }
+
+    let mut received_messages = Vec::new();
+    let timeout = Duration::from_secs(5);
+    let start = std::time::Instant::now();
+
+    while received_messages.len() < MESSAGE_COUNT * 2 && start.elapsed() < timeout {
+        if let Some(event) = rx_rc.next().await {
+            let MockEvent((_, msg_id)) = event;
+            received_messages.push(msg_id);
+        }
+    }
+
+    assert_eq!(
+        received_messages.len(),
+        MESSAGE_COUNT * 2,
+        "Should receive all messages"
+    );
+
+    let high_priority_received = received_messages[0..MESSAGE_COUNT].to_vec();
+    let regular_priority_received = received_messages[MESSAGE_COUNT..].to_vec();
+
+    for (i, msg_id) in high_priority_received.iter().enumerate() {
+        assert_eq!(
+            *msg_id,
+            HIGH_PRIORITY_START + i as u32,
+            "High priority messages should be received first and in order"
+        );
+    }
+
+    for (i, msg_id) in regular_priority_received.iter().enumerate() {
+        assert_eq!(
+            *msg_id,
+            REGULAR_PRIORITY_START + i as u32,
+            "Regular priority messages should be received after high priority"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_raptorcast_forwarding_priority() {
+    let validator1_addr: SocketAddrV4 = "127.0.0.1:12000".parse().unwrap();
+    let validator2_addr: SocketAddrV4 = "127.0.0.1:12001".parse().unwrap();
+    let validator_fullnode_addr: SocketAddrV4 = "127.0.0.1:12002".parse().unwrap();
+
+    let mut validator1_secret = [1u8; 32];
+    let mut validator2_secret = [2u8; 32];
+    let mut validator_fullnode_secret = [3u8; 32];
+
+    let validator1_key = Arc::new(KeyPair::from_bytes(&mut validator1_secret).unwrap());
+    let validator2_key = Arc::new(KeyPair::from_bytes(&mut validator2_secret).unwrap());
+    let validator_fullnode_key =
+        Arc::new(KeyPair::from_bytes(&mut validator_fullnode_secret).unwrap());
+
+    let validator1_nodeid = NodeId::new(validator1_key.pubkey());
+    let validator2_nodeid = NodeId::new(validator2_key.pubkey());
+    let validator_fullnode_nodeid = NodeId::new(validator_fullnode_key.pubkey());
+
+    let known_addresses = HashMap::from([
+        (validator1_nodeid, validator1_addr),
+        (validator2_nodeid, validator2_addr),
+        (validator_fullnode_nodeid, validator_fullnode_addr),
+    ]);
+
+    let mut validator1_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(validator1_addr),
+        known_addresses.clone(),
+        validator1_key.clone(),
+    );
+
+    let mut validator2_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(validator2_addr),
+        known_addresses.clone(),
+        validator2_key.clone(),
+    );
+
+    let mut validator_fullnode_rc = new_defaulted_raptorcast_for_tests::<
+        SignatureType,
+        MockMessage,
+        MockMessage,
+        MockEvent<PubKeyType>,
+    >(
+        SocketAddr::V4(validator_fullnode_addr),
+        known_addresses.clone(),
+        validator_fullnode_key.clone(),
+    );
+
+    let epoch = Epoch(0);
+    let validator_set = vec![
+        (validator1_nodeid, Stake::ONE),
+        (validator2_nodeid, Stake::ONE),
+        (validator_fullnode_nodeid, Stake::ONE),
+    ];
+
+    validator1_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    validator2_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    validator_fullnode_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch,
+        validator_set: validator_set.clone(),
+    }]);
+
+    validator2_rc.exec(vec![RouterCommand::UpdateFullNodes {
+        dedicated_full_nodes: vec![validator_fullnode_nodeid],
+        prioritized_full_nodes: vec![],
+    }]);
+
+    const MESSAGE_SIZE: usize = 128 << 20;
+
+    let high_priority_msg = MockMessage::new(0xAA, MESSAGE_SIZE);
+    validator1_rc.exec(vec![RouterCommand::PublishWithPriority {
+        target: monad_types::RouterTarget::Broadcast(epoch),
+        message: high_priority_msg,
+        priority: UdpPriority::High,
+    }]);
+
+    let regular_priority_msg = MockMessage::new(0xBB, MESSAGE_SIZE);
+    validator1_rc.exec(vec![RouterCommand::PublishWithPriority {
+        target: monad_types::RouterTarget::Broadcast(epoch),
+        message: regular_priority_msg,
+        priority: UdpPriority::Regular,
+    }]);
+
+    let mut received_messages = Vec::new();
+    let timeout = Duration::from_secs(2);
+    let start = std::time::Instant::now();
+
+    while received_messages.len() < 2 && start.elapsed() < timeout {
+        if let Some(event) = validator_fullnode_rc.next().await {
+            let MockEvent((from, msg_id)) = event;
+            received_messages.push((from, msg_id));
+        }
+    }
+
+    assert_eq!(received_messages.len(), 2);
+
+    assert_eq!(
+        received_messages[0].1, 0xAA,
+        "high priority message (0xAA) should be received first"
+    );
+    assert_eq!(
+        received_messages[1].1, 0xBB,
+        "regular priority message (0xBB) should be received second"
+    );
 }

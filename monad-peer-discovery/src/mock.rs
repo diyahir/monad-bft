@@ -229,9 +229,14 @@ where
 
     fn update_pinned_nodes(
         &mut self,
-        pinned_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?pinned_nodes, "updating pinned nodes");
+        debug!(
+            ?dedicated_full_nodes,
+            ?prioritized_full_nodes,
+            "updating pinned nodes"
+        );
 
         Vec::new()
     }
@@ -265,10 +270,8 @@ where
         self.known_addresses.clone()
     }
 
-    fn get_secondary_fullnode_addrs(
-        &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
-        HashMap::new()
+    fn get_secondary_fullnodes(&self) -> Vec<NodeId<CertificateSignaturePubKey<ST>>> {
+        Vec::new()
     }
 
     fn get_name_records(

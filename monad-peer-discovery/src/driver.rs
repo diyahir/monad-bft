@@ -214,9 +214,12 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 self.pd.update_validator_set(epoch, validators)
             }
             PeerDiscoveryEvent::UpdatePeers { peers } => self.pd.update_peers(peers),
-            PeerDiscoveryEvent::UpdatePinnedNodes { pinned_full_nodes } => {
-                self.pd.update_pinned_nodes(pinned_full_nodes)
-            }
+            PeerDiscoveryEvent::UpdatePinnedNodes {
+                dedicated_full_nodes,
+                prioritized_full_nodes,
+            } => self
+                .pd
+                .update_pinned_nodes(dedicated_full_nodes, prioritized_full_nodes),
             PeerDiscoveryEvent::UpdateConfirmGroup { end_round, peers } => {
                 self.pd.update_peer_participation(end_round, peers)
             }
@@ -291,14 +294,10 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             .collect()
     }
 
-    pub fn get_secondary_fullnode_addrs(
+    pub fn get_secondary_fullnodes(
         &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<PD::SignatureType>>, SocketAddr> {
-        self.pd
-            .get_secondary_fullnode_addrs()
-            .into_iter()
-            .map(|(k, v)| (k, SocketAddr::V4(v)))
-            .collect()
+    ) -> Vec<NodeId<CertificateSignaturePubKey<PD::SignatureType>>> {
+        self.pd.get_secondary_fullnodes()
     }
 
     pub fn get_name_records(

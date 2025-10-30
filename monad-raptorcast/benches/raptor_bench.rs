@@ -23,7 +23,8 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    udp::{build_messages, parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
+    packet::build_messages,
+    udp::{parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, EpochValidators, Redundancy},
 };
 use monad_secp::{KeyPair, SecpSignature};
