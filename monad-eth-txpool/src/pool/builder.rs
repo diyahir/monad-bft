@@ -108,13 +108,28 @@ pub struct ExternalBuilderPoolMetadata {
     pub nonce_map: HashMap<(Address, u64), usize>,
 }
 
+/// A bundle that's currently active and can be used for block building
+#[derive(Debug, Clone)]
+struct ActiveBundle<ST: CertificateSignatureRecoverable> {
+    /// Hash of this bundle (for replay detection)
+    bundle_hash: B256,
+    /// Builder who submitted this
+    builder: CertificateSignaturePubKey<ST>,
+    /// Transactions in this bundle
+    transactions: VecDeque<Recovered<TxEnvelope>>,
+    /// Metadata for this bundle
+    metadata: ExternalBuilderPoolMetadata,
+    /// When this bundle was received (for future metrics/debugging)
+    #[allow(dead_code)]
+    received_at: u64,
+}
+
 /// Storage for external block builder transactions that should be prioritized
+/// Only one bundle can be active at a time. New bundles replace old ones.
 #[derive(Debug, Clone)]
 pub struct ExternalBuilderTxPool<ST: CertificateSignatureRecoverable> {
-    /// Raw transactions ready for inclusion
-    transactions: VecDeque<Recovered<TxEnvelope>>,
-    /// Metadata about the transactions in the pool
-    metadata: ExternalBuilderPoolMetadata,
+    /// Current active bundle (can be replaced until used in a block)
+    current_bundle: Option<ActiveBundle<ST>>,
     /// Authorized builder public keys
     authorized_builders: HashSet<CertificateSignaturePubKey<ST>>,
     /// Maximum bundle age for replay protection
@@ -132,8 +147,7 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
         max_bundle_age_secs: u64,
     ) -> Self {
         Self {
-            transactions: VecDeque::new(),
-            metadata: ExternalBuilderPoolMetadata::default(),
+            current_bundle: None,
             authorized_builders: authorized_builders.into_iter().collect(),
             max_bundle_age_secs,
             recent_bundles: HashMap::new(),
@@ -147,6 +161,14 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
         authorized_builders: Vec<CertificateSignaturePubKey<ST>>,
     ) {
         self.authorized_builders = authorized_builders.into_iter().collect();
+        
+        // Clear current bundle if it's from a builder that's no longer authorized
+        if let Some(ref bundle) = self.current_bundle {
+            if !self.authorized_builders.contains(&bundle.builder) {
+                debug!("Clearing bundle from de-authorized builder: {:?}", bundle.builder);
+                self.current_bundle = None;
+            }
+        }
     }
 
     /// Add a signed bundle of transactions with comprehensive validation
@@ -333,82 +355,111 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
             total_size
         );
 
-        // 6. Store validated transactions and update metadata
+        // 6. Store validated transactions - REPLACE any existing bundle
         self.recent_bundles.insert(bundle_hash, current_time);
         
-        let added = valid_transactions.len();
-        for tx in valid_transactions.into_iter() {
-            // Update metadata as we add transactions
-            let key = (tx.signer(), tx.nonce());
-            self.metadata.nonce_map.insert(key, self.metadata.nonce_map.len());
-            self.metadata.total_gas += tx.gas_limit();
-            self.metadata.total_size += tx.tx().length() as u64;
-            
-            self.transactions.push_back(tx);
+        // Check if we're replacing an existing bundle
+        if let Some(old_bundle) = &self.current_bundle {
+            debug!(
+                "Replacing existing bundle from builder {:?} (hash: {:?}) with new bundle from builder {:?} (hash: {:?})",
+                old_bundle.builder, old_bundle.bundle_hash, bundle.signer, bundle_hash
+            );
         }
+        
+        // Create metadata for this bundle
+        let mut metadata = ExternalBuilderPoolMetadata::default();
+        let mut transactions = VecDeque::new();
+        
+        for tx in valid_transactions.into_iter() {
+            let key = (tx.signer(), tx.nonce());
+            metadata.nonce_map.insert(key, metadata.nonce_map.len());
+            metadata.total_gas += tx.gas_limit();
+            metadata.total_size += tx.tx().length() as u64;
+            transactions.push_back(tx);
+        }
+        
+        let added = transactions.len();
+        
+        // Replace current bundle with this new one
+        self.current_bundle = Some(ActiveBundle {
+            bundle_hash,
+            builder: bundle.signer.clone(),
+            transactions,
+            metadata,
+            received_at: current_time,
+        });
 
-        debug!("  ✓ Added {} transactions to builder pool", added);
-        debug!("  New pool size: {}", self.transactions.len());
-        debug!("  Pool metadata: gas={}, size={}, nonces={}", 
-               self.metadata.total_gas, self.metadata.total_size, self.metadata.nonce_map.len());
+        debug!("  ✓ Set new active bundle with {} transactions", added);
         debug!("=== Builder Bundle Validation Complete ===");
         
         debug!(
             signer = ?bundle.signer,
-            added_transactions = added,
-            pool_size = self.transactions.len(),
-            "Successfully added block builder transaction bundle"
+            transactions = added,
+            "Successfully set active block builder bundle"
         );
 
         Ok(added)
     }
 
     /// Get transactions for block proposal, up to the specified limit
+    /// This consumes the current bundle. Subsequent calls return empty until a new bundle arrives.
     /// Returns (transactions, metadata for those transactions)
     pub fn get_transactions(&mut self, limit: usize) -> (Vec<Recovered<TxEnvelope>>, ExternalBuilderPoolMetadata) {
-        let to_take = limit.min(self.transactions.len());
-        let taken: Vec<_> = self.transactions.drain(..to_take).collect();
-        
-        // Calculate metadata for the taken transactions
-        let mut taken_metadata = ExternalBuilderPoolMetadata::default();
-        for tx in &taken {
-            let key = (tx.signer(), tx.nonce());
-            taken_metadata.nonce_map.insert(key, taken_metadata.nonce_map.len());
-            taken_metadata.total_gas += tx.gas_limit();
-            taken_metadata.total_size += tx.tx().length() as u64;
+        if let Some(mut bundle) = self.current_bundle.take() {
+            let to_take = limit.min(bundle.transactions.len());
+            let taken: Vec<_> = bundle.transactions.drain(..to_take).collect();
+            
+            // Calculate metadata for the taken transactions
+            let mut taken_metadata = ExternalBuilderPoolMetadata::default();
+            for tx in &taken {
+                let key = (tx.signer(), tx.nonce());
+                taken_metadata.nonce_map.insert(key, taken_metadata.nonce_map.len());
+                taken_metadata.total_gas += tx.gas_limit();
+                taken_metadata.total_size += tx.tx().length() as u64;
+            }
+            
+            // If there are remaining transactions, put the bundle back (partial consumption)
+            if !bundle.transactions.is_empty() {
+                // Recalculate metadata for remaining transactions
+                bundle.metadata = ExternalBuilderPoolMetadata::default();
+                for tx in &bundle.transactions {
+                    let key = (tx.signer(), tx.nonce());
+                    bundle.metadata.nonce_map.insert(key, bundle.metadata.nonce_map.len());
+                    bundle.metadata.total_gas += tx.gas_limit();
+                    bundle.metadata.total_size += tx.tx().length() as u64;
+                }
+                self.current_bundle = Some(bundle);
+            }
+            
+            (taken, taken_metadata)
+        } else {
+            // No current bundle
+            (Vec::new(), ExternalBuilderPoolMetadata::default())
         }
-        
-        // Recalculate metadata for remaining transactions
-        self.metadata = ExternalBuilderPoolMetadata::default();
-        for tx in &self.transactions {
-            let key = (tx.signer(), tx.nonce());
-            self.metadata.nonce_map.insert(key, self.metadata.nonce_map.len());
-            self.metadata.total_gas += tx.gas_limit();
-            self.metadata.total_size += tx.tx().length() as u64;
-        }
-        
-        (taken, taken_metadata)
     }
 
     /// Get the number of transactions currently stored
     pub fn len(&self) -> usize {
-        self.transactions.len()
+        self.current_bundle.as_ref().map_or(0, |b| b.transactions.len())
     }
 
     /// Check if the pool is empty
     pub fn is_empty(&self) -> bool {
-        self.transactions.is_empty()
+        self.current_bundle.is_none()
     }
 
-    /// Clear all stored transactions
+    /// Clear the current bundle
     pub fn clear(&mut self) {
-        self.transactions.clear();
-        self.metadata = ExternalBuilderPoolMetadata::default();
+        self.current_bundle = None;
     }
 
     /// Get an iterator over the stored transactions (for debugging/metrics)
     pub fn iter(&self) -> impl Iterator<Item = &Recovered<TxEnvelope>> {
-        self.transactions.iter()
+        self.current_bundle
+            .as_ref()
+            .map(|b| b.transactions.iter())
+            .into_iter()
+            .flatten()
     }
 
     /// Clean up old entries from the replay protection cache
@@ -854,5 +905,96 @@ mod tests {
         // Should succeed
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 2);
+    }
+    
+    #[test]
+    fn test_bundle_replacement() {
+        let keypair = make_test_keypair(TEST_SECRET);
+        let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+        
+        let (chain_params, execution_params) = get_test_chain_params();
+        let chain_id = MockChainConfig::DEFAULT.chain_id();
+        
+        // Create first bundle with one transaction
+        let tx_signer1 = PrivateKeySigner::from_bytes(&B256::new(hex!(
+            "1111111111111111111111111111111111111111111111111111111111111111"
+        ))).unwrap();
+        let tx1 = make_test_transaction(0, chain_id, &tx_signer1);
+        
+        let timestamp1 = current_timestamp();
+        let bundle1 = SignedExternalBuilderBundle {
+            transactions: vec![tx1.clone()],
+            signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &keypair),
+            signer: keypair.pubkey(),
+            timestamp: timestamp1,
+        };
+        
+        let bundle1_hash = bundle1.compute_bundle_hash();
+        let bundle1_with_sig = SignedExternalBuilderBundle {
+            transactions: bundle1.transactions,
+            signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&bundle1_hash.0, &keypair),
+            signer: keypair.pubkey(),
+            timestamp: timestamp1,
+        };
+        
+        // Submit first bundle
+        let result1 = pool.add_signed_bundle(
+            bundle1_with_sig,
+            timestamp1,
+            chain_id,
+            chain_params,
+            execution_params,
+        );
+        assert!(result1.is_ok());
+        assert_eq!(pool.len(), 1);
+        
+        // Create second bundle with different transactions from different senders
+        let tx_signer2 = PrivateKeySigner::from_bytes(&B256::new(hex!(
+            "2222222222222222222222222222222222222222222222222222222222222222"
+        ))).unwrap();
+        let tx_signer3 = PrivateKeySigner::from_bytes(&B256::new(hex!(
+            "3333333333333333333333333333333333333333333333333333333333333333"
+        ))).unwrap();
+        let tx2 = make_test_transaction(0, chain_id, &tx_signer2);
+        let tx3 = make_test_transaction(0, chain_id, &tx_signer3);
+        
+        let timestamp2 = timestamp1 + 1;
+        let bundle2 = SignedExternalBuilderBundle {
+            transactions: vec![tx2.clone(), tx3.clone()],
+            signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &keypair),
+            signer: keypair.pubkey(),
+            timestamp: timestamp2,
+        };
+        
+        let bundle2_hash = bundle2.compute_bundle_hash();
+        let bundle2_with_sig = SignedExternalBuilderBundle {
+            transactions: bundle2.transactions,
+            signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&bundle2_hash.0, &keypair),
+            signer: keypair.pubkey(),
+            timestamp: timestamp2,
+        };
+        
+        // Submit second bundle - should replace first
+        let result2 = pool.add_signed_bundle(
+            bundle2_with_sig,
+            timestamp2,
+            chain_id,
+            chain_params,
+            execution_params,
+        );
+        assert!(result2.is_ok());
+        
+        // Pool should now have 2 transactions (from second bundle)
+        assert_eq!(pool.len(), 2);
+        
+        // Get transactions - should only get those from second bundle
+        let (txs, _metadata) = pool.get_transactions(10);
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0].tx_hash(), tx2.tx_hash());
+        assert_eq!(txs[1].tx_hash(), tx3.tx_hash());
+        
+        // Pool should now be empty after consumption
+        assert_eq!(pool.len(), 0);
+        assert!(pool.is_empty());
     }
 }
