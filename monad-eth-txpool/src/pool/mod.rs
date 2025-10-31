@@ -475,6 +475,7 @@ where
             remaining_gas_limit,
             remaining_byte_limit,
             extending_blocks.iter().collect(),
+            &builder_transactions,
             block_policy,
             state_backend,
             chain_config,
@@ -776,6 +777,7 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
+        builder_transactions: &[Recovered<TxEnvelope>],
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_backend: &SBT,
         chain_config: &CCT,
@@ -818,7 +820,7 @@ where
             return Ok(Vec::default());
         }
 
-        let (account_balances, state_backend_lookups) = {
+        let (mut account_balances, state_backend_lookups) = {
             let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                 debug!(
                     ?elapsed,
@@ -856,6 +858,28 @@ where
             &self.chain_revision,
             &self.execution_revision,
         )?;
+
+        // Pre-deduct builder transaction costs from account balances
+        // This ensures user transactions are validated with accurate remaining balances
+        if !builder_transactions.is_empty() {
+            debug!(
+                "Pre-deducting costs for {} builder transactions from account balances",
+                builder_transactions.len()
+            );
+            
+            for (i, builder_tx) in builder_transactions.iter().enumerate() {
+                if let Err(err) = validator.try_add_transaction(&mut account_balances, builder_tx) {
+                    // This shouldn't happen as builder txs were already validated,
+                    // but log it for debugging
+                    warn!(
+                        "Builder transaction {} failed balance validation during user tx sequencing: {:?}",
+                        i, err
+                    );
+                }
+            }
+            
+            debug!("Builder transaction costs pre-deducted from account balances");
+        }
 
         let proposal = sequencer.build_proposal(
             tx_limit,

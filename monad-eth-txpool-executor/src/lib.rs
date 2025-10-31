@@ -661,7 +661,10 @@ where
                         
                         debug!("  Current time: {}, bundle timestamp: {}", current_time, signed_bundle.timestamp);
                         
-                        match pool.submit_signed_builder_bundle(signed_bundle, current_time) {
+                        match pool.submit_signed_builder_bundle(
+                            signed_bundle,
+                            current_time,
+                        ) {
                             Ok(added_count) => {
                                 debug!(
                                     added_transactions = added_count,
