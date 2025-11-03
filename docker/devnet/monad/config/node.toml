@@ -95,7 +95,7 @@ enabled = true
 # Maximum age of builder bundles in seconds (replay protection)
 max_bundle_age_secs = 300
 
-# Authorized block builder identities
-[[external_block_builder.authorized_builders]]
+# Authorized block builder identity
+[external_block_builder.authorized_builder]
 name = "test-builder"
 pubkey = "027a841b18fdeb6e1c841fdf81095f83a604d6aa7820e8309da4bf01a01350e115"

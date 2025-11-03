@@ -108,7 +108,7 @@ fn test_authorization() {
     )));
     
     let mut pool = ExternalBuilderTxPool::new(
-        vec![authorized_keypair.pubkey()],
+        Some(authorized_keypair.pubkey()),
         300,
     );
     
@@ -116,16 +116,28 @@ fn test_authorization() {
     let (chain_params, execution_params) = get_test_chain_params();
     let chain_id = MockChainConfig::DEFAULT.chain_id();
     
-    // Test authorized submission (empty bundle, should succeed)
+    // Test authorized submission with a simple transaction
+    let tx_signer = PrivateKeySigner::from_bytes(&TEST_SECRET).unwrap();
+    let tx = make_test_transaction(0, chain_id, &tx_signer);
+    
     let authorized_bundle = SignedExternalBuilderBundle {
-        transactions: Vec::new(),
-        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&timestamp.to_be_bytes()).0, &authorized_keypair),
+        transactions: vec![tx],
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &authorized_keypair),
+        signer: authorized_keypair.pubkey(),
+        timestamp,
+    };
+    
+    // Compute correct bundle hash
+    let correct_bundle_hash = authorized_bundle.compute_bundle_hash();
+    let authorized_bundle_with_sig = SignedExternalBuilderBundle {
+        transactions: authorized_bundle.transactions,
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&correct_bundle_hash.0, &authorized_keypair),
         signer: authorized_keypair.pubkey(),
         timestamp,
     };
     
     let result = pool.add_signed_bundle(
-        authorized_bundle,
+        authorized_bundle_with_sig,
         timestamp,
         chain_id,
         chain_params,
@@ -134,17 +146,26 @@ fn test_authorization() {
     assert!(result.is_ok());
     
     // Test unauthorized submission
+    let tx2 = make_test_transaction(0, chain_id, &tx_signer);
     let unauthorized_bundle = SignedExternalBuilderBundle {
-        transactions: Vec::new(),
-        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&timestamp.to_be_bytes()).0, &unauthorized_keypair),
+        transactions: vec![tx2],
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &unauthorized_keypair),
         signer: unauthorized_keypair.pubkey(),
-        timestamp,
+        timestamp: timestamp + 1,
+    };
+    
+    let unauth_bundle_hash = unauthorized_bundle.compute_bundle_hash();
+    let unauthorized_bundle_with_sig = SignedExternalBuilderBundle {
+        transactions: unauthorized_bundle.transactions,
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&unauth_bundle_hash.0, &unauthorized_keypair),
+        signer: unauthorized_keypair.pubkey(),
+        timestamp: timestamp + 1,
     };
     
     assert_eq!(
         pool.add_signed_bundle(
-            unauthorized_bundle,
-            timestamp,
+            unauthorized_bundle_with_sig,
+            timestamp + 1,
             chain_id,
             chain_params,
             execution_params,
@@ -157,27 +178,38 @@ fn test_authorization() {
 #[test]
 fn test_replay_protection() {
     let keypair = make_test_keypair(TEST_SECRET);
-    let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+    let mut pool = ExternalBuilderTxPool::new(Some(keypair.pubkey()), 300);
     
     let timestamp = current_timestamp();
     let (chain_params, execution_params) = get_test_chain_params();
     let chain_id = MockChainConfig::DEFAULT.chain_id();
     
+    let tx_signer = PrivateKeySigner::from_bytes(&TEST_SECRET).unwrap();
+    let tx = make_test_transaction(0, chain_id, &tx_signer);
+    
     let bundle = SignedExternalBuilderBundle {
-        transactions: Vec::new(),
-        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&timestamp.to_be_bytes()).0, &keypair),
+        transactions: vec![tx],
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &keypair),
+        signer: keypair.pubkey(),
+        timestamp,
+    };
+    
+    let bundle_hash = bundle.compute_bundle_hash();
+    let bundle_with_sig = SignedExternalBuilderBundle {
+        transactions: bundle.transactions.clone(),
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&bundle_hash.0, &keypair),
         signer: keypair.pubkey(),
         timestamp,
     };
     
     // First submission should succeed
     assert!(pool
-        .add_signed_bundle(bundle.clone(), timestamp, chain_id, chain_params, execution_params)
+        .add_signed_bundle(bundle_with_sig.clone(), timestamp, chain_id, chain_params, execution_params)
         .is_ok());
     
     // Second submission of same bundle should fail
     assert_eq!(
-        pool.add_signed_bundle(bundle, timestamp, chain_id, chain_params, execution_params)
+        pool.add_signed_bundle(bundle_with_sig, timestamp, chain_id, chain_params, execution_params)
             .unwrap_err(),
         ExternalBuilderError::ReplayAttempt
     );
@@ -186,38 +218,58 @@ fn test_replay_protection() {
 #[test]
 fn test_timestamp_validation() {
     let keypair = make_test_keypair(TEST_SECRET);
-    let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+    let mut pool = ExternalBuilderTxPool::new(Some(keypair.pubkey()), 300);
     
     let current_time = current_timestamp();
     let (chain_params, execution_params) = get_test_chain_params();
     let chain_id = MockChainConfig::DEFAULT.chain_id();
     
+    let tx_signer = PrivateKeySigner::from_bytes(&TEST_SECRET).unwrap();
+    let tx = make_test_transaction(0, chain_id, &tx_signer);
+    
     // Test bundle too old
     let old_timestamp = current_time - 400;
     let old_bundle = SignedExternalBuilderBundle {
-        transactions: Vec::new(),
-        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&old_timestamp.to_be_bytes()).0, &keypair),
+        transactions: vec![tx.clone()],
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &keypair),
+        signer: keypair.pubkey(),
+        timestamp: old_timestamp,
+    };
+    
+    let old_bundle_hash = old_bundle.compute_bundle_hash();
+    let old_bundle_with_sig = SignedExternalBuilderBundle {
+        transactions: old_bundle.transactions,
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&old_bundle_hash.0, &keypair),
         signer: keypair.pubkey(),
         timestamp: old_timestamp,
     };
     
     assert_eq!(
-        pool.add_signed_bundle(old_bundle, current_time, chain_id, chain_params, execution_params)
+        pool.add_signed_bundle(old_bundle_with_sig, current_time, chain_id, chain_params, execution_params)
             .unwrap_err(),
         ExternalBuilderError::BundleTooOld
     );
     
     // Test bundle from future
     let future_timestamp = current_time + 100;
+    let tx2 = make_test_transaction(1, chain_id, &tx_signer);
     let future_bundle = SignedExternalBuilderBundle {
-        transactions: Vec::new(),
-        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&future_timestamp.to_be_bytes()).0, &keypair),
+        transactions: vec![tx2],
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&keccak256(&[]).0, &keypair),
+        signer: keypair.pubkey(),
+        timestamp: future_timestamp,
+    };
+    
+    let future_bundle_hash = future_bundle.compute_bundle_hash();
+    let future_bundle_with_sig = SignedExternalBuilderBundle {
+        transactions: future_bundle.transactions,
+        signature: NopSignature::sign::<ExternalBlockBuilderDomain>(&future_bundle_hash.0, &keypair),
         signer: keypair.pubkey(),
         timestamp: future_timestamp,
     };
     
     assert_eq!(
-        pool.add_signed_bundle(future_bundle, current_time, chain_id, chain_params, execution_params)
+        pool.add_signed_bundle(future_bundle_with_sig, current_time, chain_id, chain_params, execution_params)
             .unwrap_err(),
         ExternalBuilderError::BundleFromFuture
     );
@@ -226,7 +278,7 @@ fn test_timestamp_validation() {
 #[test]
 fn test_duplicate_nonces_in_bundle() {
     let keypair = make_test_keypair(TEST_SECRET);
-    let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+    let mut pool = ExternalBuilderTxPool::new(Some(keypair.pubkey()), 300);
     
     let timestamp = current_timestamp();
     let (chain_params, execution_params) = get_test_chain_params();
@@ -273,7 +325,7 @@ fn test_duplicate_nonces_in_bundle() {
 #[test]
 fn test_invalid_chain_id_in_transaction() {
     let keypair = make_test_keypair(TEST_SECRET);
-    let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+    let mut pool = ExternalBuilderTxPool::new(Some(keypair.pubkey()), 300);
     
     let timestamp = current_timestamp();
     let (chain_params, execution_params) = get_test_chain_params();
@@ -324,7 +376,7 @@ fn test_invalid_chain_id_in_transaction() {
 #[test]
 fn test_valid_bundle_with_multiple_senders() {
     let keypair = make_test_keypair(TEST_SECRET);
-    let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+    let mut pool = ExternalBuilderTxPool::new(Some(keypair.pubkey()), 300);
     
     let timestamp = current_timestamp();
     let (chain_params, execution_params) = get_test_chain_params();
@@ -375,7 +427,7 @@ fn test_valid_bundle_with_multiple_senders() {
 #[test]
 fn test_bundle_replacement() {
     let keypair = make_test_keypair(TEST_SECRET);
-    let mut pool = ExternalBuilderTxPool::new(vec![keypair.pubkey()], 300);
+    let mut pool = ExternalBuilderTxPool::new(Some(keypair.pubkey()), 300);
     
     let (chain_params, execution_params) = get_test_chain_params();
     let chain_id = MockChainConfig::DEFAULT.chain_id();

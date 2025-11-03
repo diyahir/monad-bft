@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     fmt,
     marker::PhantomData,
 };
@@ -22,17 +22,13 @@ use std::{
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{hex, keccak256, Address, B256};
 use alloy_rlp::Encodable;
-use monad_chain_config::{execution_revision::ExecutionChainParams, revision::{ChainParams, ChainRevision}, ChainConfig};
-use monad_consensus_types::block::ConsensusBlockHeader;
+use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_crypto::signing_domain;
-use monad_validator::signature_collection::SignatureCollection;
-use monad_eth_block_policy::{nonce_usage::{NonceUsage, NonceUsageMap}, validation::static_validate_transaction, EthBlockPolicy};
+use monad_eth_block_policy::{nonce_usage::{NonceUsage, NonceUsageMap}, validation::static_validate_transaction};
 use monad_eth_txpool_types::TransactionError;
-use monad_eth_types::EthExecutionProtocol;
-use monad_state_backend::StateBackend;
 use monad_types::Balance;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -135,8 +131,8 @@ struct ActiveBundle<ST: CertificateSignatureRecoverable> {
 pub struct ExternalBuilderTxPool<ST: CertificateSignatureRecoverable> {
     /// Current active bundle (can be replaced until used in a block)
     current_bundle: Option<ActiveBundle<ST>>,
-    /// Authorized builder public keys
-    authorized_builders: HashSet<CertificateSignaturePubKey<ST>>,
+    /// Authorized builder public key 
+    authorized_builder: Option<CertificateSignaturePubKey<ST>>,
     /// Maximum bundle age for replay protection
     max_bundle_age_secs: u64,
     /// Recently seen bundle hashes (simple replay protection)
@@ -148,28 +144,28 @@ pub struct ExternalBuilderTxPool<ST: CertificateSignatureRecoverable> {
 impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
     /// Create a new external block builder transaction pool
     pub fn new(
-        authorized_builders: Vec<CertificateSignaturePubKey<ST>>,
+        authorized_builder: Option<CertificateSignaturePubKey<ST>>,
         max_bundle_age_secs: u64,
     ) -> Self {
         Self {
             current_bundle: None,
-            authorized_builders: authorized_builders.into_iter().collect(),
+            authorized_builder,
             max_bundle_age_secs,
             recent_bundles: HashMap::new(),
             _phantom: PhantomData,
         }
     }
 
-    /// Update the authorized builders list
-    pub fn update_authorized_builders(
+    /// Update the authorized builder
+    pub fn update_authorized_builder(
         &mut self,
-        authorized_builders: Vec<CertificateSignaturePubKey<ST>>,
+        authorized_builder: Option<CertificateSignaturePubKey<ST>>,
     ) {
-        self.authorized_builders = authorized_builders.into_iter().collect();
+        self.authorized_builder = authorized_builder;
         
         // Clear current bundle if it's from a builder that's no longer authorized
         if let Some(ref bundle) = self.current_bundle {
-            if !self.authorized_builders.contains(&bundle.builder) {
+            if self.authorized_builder.as_ref() != Some(&bundle.builder) {
                 debug!("Clearing bundle from de-authorized builder: {:?}", bundle.builder);
                 self.current_bundle = None;
             }
@@ -193,18 +189,30 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
         
         // 1. Check if builder is authorized
         debug!("Step 1: Checking authorization...");
-        debug!("  Authorized builders: {:?}", self.authorized_builders);
-        if !self.authorized_builders.contains(&bundle.signer) {
+        debug!("  Authorized builder: {:?}", self.authorized_builder);
+        if self.authorized_builder.as_ref() != Some(&bundle.signer) {
             warn!(
                 signer = ?bundle.signer,
+                authorized = ?self.authorized_builder,
                 "Unauthorized block builder attempted to submit transactions"
             );
             return Err(ExternalBuilderError::UnauthorizedBuilder);
         }
         debug!("  ✓ Builder is authorized");
 
-        // 2. Check timestamp (not too old, not too far in future)
-        debug!("Step 2: Checking timestamp validity...");
+        // 2. Reject empty bundles (no legitimate use case, potential spam/replay vector)
+        debug!("Step 2: Checking bundle is not empty...");
+        if bundle.transactions.is_empty() {
+            warn!(
+                signer = ?bundle.signer,
+                "Block builder submitted empty bundle"
+            );
+            return Err(ExternalBuilderError::BundleEmpty);
+        }
+        debug!("  ✓ Bundle contains {} transactions", bundle.transactions.len());
+
+        // 3. Check timestamp (not too old, not too far in future)
+        debug!("Step 3: Checking timestamp validity...");
         let age = current_time.saturating_sub(bundle.timestamp);
         debug!("  Bundle age: {} seconds", age);
         debug!("  Max age: {} seconds", self.max_bundle_age_secs);
@@ -227,8 +235,8 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
         }
         debug!("  ✓ Timestamp is valid");
 
-        // 3. Verify cryptographic signature
-        debug!("Step 3: Verifying cryptographic signature...");
+        // 4. Verify cryptographic signature
+        debug!("Step 4: Verifying cryptographic signature...");
         let bundle_hash = bundle.compute_bundle_hash();
         debug!("  Bundle hash: {:?}", bundle_hash);
         if !bundle.verify_signature() {
@@ -241,8 +249,8 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
         }
         debug!("  ✓ Signature is valid");
 
-        // 4. Check for replay (bundle hash already seen recently)
-        debug!("Step 4: Checking for replay...");
+        // 5. Check for replay (bundle hash already seen recently)
+        debug!("Step 5: Checking for replay...");
         if self.recent_bundles.contains_key(&bundle_hash) {
             warn!(
                 bundle_hash = ?bundle_hash,
@@ -252,8 +260,8 @@ impl<ST: CertificateSignatureRecoverable> ExternalBuilderTxPool<ST> {
         }
         debug!("  ✓ Not a replay");
 
-        // 5. Validate transaction contents
-        debug!("Step 5: Validating transaction contents...");
+        // 6. Validate transaction contents
+        debug!("Step 6: Validating transaction contents...");
         let mut nonce_tracker = NonceUsageMap::default();
         let mut valid_transactions = Vec::new();
         let mut total_gas: u64 = 0;
@@ -504,6 +512,7 @@ pub enum ExternalBuilderError {
     ReplayAttempt,
     NotEnabled,
     PoolNotReady,
+    BundleEmpty,
     TransactionValidationFailed(String),
     BundleTooLarge(usize),
     InvalidNonceSequence {
@@ -543,6 +552,7 @@ impl fmt::Display for ExternalBuilderError {
             ExternalBuilderError::ReplayAttempt => write!(f, "Replay attempt detected"),
             ExternalBuilderError::NotEnabled => write!(f, "Block builder functionality not enabled"),
             ExternalBuilderError::PoolNotReady => write!(f, "Transaction pool not ready"),
+            ExternalBuilderError::BundleEmpty => write!(f, "Bundle contains no transactions"),
             ExternalBuilderError::TransactionValidationFailed(reason) => {
                 write!(f, "Transaction validation failed: {}", reason)
             }

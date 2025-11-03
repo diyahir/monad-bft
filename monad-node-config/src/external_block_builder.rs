@@ -26,10 +26,10 @@ pub struct ExternalBlockBuilderConfig<P: PubKey> {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Authorized block builder identities
+    /// Authorized block builder identity 
     #[serde(default)]
     #[serde(bound = "P: PubKey")]
-    pub authorized_builders: Vec<ExternalBlockBuilderIdentityConfig<P>>,
+    pub authorized_builder: Option<ExternalBlockBuilderIdentityConfig<P>>,
 
     /// Maximum age of builder bundles in seconds (replay protection)
     #[serde(default = "default_max_bundle_age_secs")]
@@ -54,7 +54,7 @@ impl<P: PubKey> Default for ExternalBlockBuilderConfig<P> {
     fn default() -> Self {
         Self {
             enabled: false,
-            authorized_builders: Vec::new(),
+            authorized_builder: None,
             max_bundle_age_secs: default_max_bundle_age_secs(),
         }
     }

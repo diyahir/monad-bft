@@ -105,15 +105,14 @@ where
         do_local_insert: bool,
         external_builder_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) -> Self {
-        // Extract authorized builder public keys
-        let authorized_builders = external_builder_config
-            .authorized_builders
-            .iter()
-            .map(|builder| builder.pubkey)
-            .collect();
+        // Extract authorized builder public key
+        let authorized_builder = external_builder_config
+            .authorized_builder
+            .as_ref()
+            .map(|builder| builder.pubkey);
 
         let external_builder_pool = ExternalBuilderTxPool::new(
-            authorized_builders,
+            authorized_builder,
             external_builder_config.max_bundle_age_secs,
         );
 
@@ -302,22 +301,21 @@ where
         )
     }
 
-    /// Update the authorized block builders list
-    pub fn update_authorized_builders(
+    /// Update the authorized block builder
+    pub fn update_authorized_builder(
         &mut self,
         new_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) {
         // Update the configuration
         self.external_builder_config = new_config.clone();
 
-        // Extract authorized builder public keys and update the pool
-        let authorized_builders = new_config
-            .authorized_builders
-            .iter()
-            .map(|builder| builder.pubkey)
-            .collect();
+        // Extract authorized builder public key and update the pool
+        let authorized_builder = new_config
+            .authorized_builder
+            .as_ref()
+            .map(|builder| builder.pubkey);
 
-        self.external_builder_pool.update_authorized_builders(authorized_builders);
+        self.external_builder_pool.update_authorized_builder(authorized_builder);
     }
 
     /// Get current block builder pool statistics (for monitoring/debugging)
