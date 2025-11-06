@@ -40,6 +40,7 @@ services:
       --block_db /monad/ledger
       --statesync /monad/statesync.sock
       --log_level ERROR
+      --exec-event-ring /monad/monad-exec-events
     ulimits:
       memlock:
         soft: "16770785280"
@@ -97,11 +98,15 @@ services:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     ports:
       - "8080:8080"
+      - "8081:8081"
     command: |
       monad-rpc
       --ipc-path /monad/mempool.sock
       --triedb-path /monad/triedb
       --node-config /monad/config/node.toml
+      --ws-enabled
+      --ws-port 8081
+      --exec-event-path /monad/monad-exec-events
     ulimits:
       memlock:
         soft: "16770785280"
