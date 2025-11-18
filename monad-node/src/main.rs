@@ -73,7 +73,7 @@ use monad_validator::{
     signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
     weighted_round_robin::WeightedRoundRobin,
 };
-use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
+use monad_wal::wal::WALoggerConfig;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
@@ -337,7 +337,7 @@ async fn run(node_state: NodeState, reload_handle: Box<dyn TracingReload>) -> Re
             // TODO(andr-dev): Use timestamp from last commit in ledger
             0,
             true,
-            node_state.node_config.block_builder.clone(),
+            node_state.node_config.external_block_builder.clone(),
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -681,17 +681,17 @@ where
                 )
             })
             .collect();
+    let prioritized_full_nodes: BTreeSet<_> = node_config
+        .fullnode_raptorcast
+        .full_nodes_prioritized
+        .identities
+        .iter()
+        .map(|id| NodeId::new(id.secp256k1_pubkey))
+        .collect();
     let pinned_full_nodes: BTreeSet<_> = full_nodes
         .iter()
         .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
-        .chain(
-            node_config
-                .fullnode_raptorcast
-                .full_nodes_prioritized
-                .identities
-                .iter()
-                .map(|id| NodeId::new(id.secp256k1_pubkey)),
-        )
+        .chain(prioritized_full_nodes.clone())
         .chain(bootstrap_peers.keys().cloned())
         .collect();
 
@@ -702,6 +702,7 @@ where
         current_epoch,
         epoch_validators: epoch_validators.clone(),
         pinned_full_nodes,
+        prioritized_full_nodes,
         bootstrap_peers,
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
@@ -710,6 +711,7 @@ where
             .last_participation_prune_threshold,
         min_num_peers: peer_discovery_config.min_num_peers,
         max_num_peers: peer_discovery_config.max_num_peers,
+        max_group_size: node_config.fullnode_raptorcast.max_group_size,
         enable_publisher: node_config.fullnode_raptorcast.enable_publisher,
         enable_client: node_config.fullnode_raptorcast.enable_client,
         rng: ChaCha8Rng::from_entropy(),

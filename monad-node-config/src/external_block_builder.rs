@@ -21,26 +21,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 #[serde(bound = "P: PubKey")]
-pub struct BlockBuilderConfig<P: PubKey> {
+pub struct ExternalBlockBuilderConfig<P: PubKey> {
     /// Enable block builder transaction prioritization
     #[serde(default)]
     pub enabled: bool,
 
-    /// Maximum number of block builder transactions per block
-    #[serde(default = "default_max_builder_txs")]
-    pub max_builder_txs: usize,
-
-    /// Maximum number of builder transactions to store in memory
-    #[serde(default = "default_max_pool_size")]
-    pub max_pool_size: usize,
-
-    /// API endpoint for receiving builder transactions (optional)
-    pub api_endpoint: Option<String>,
-
-    /// Authorized block builder identities
+    /// Authorized block builder identity 
     #[serde(default)]
     #[serde(bound = "P: PubKey")]
-    pub authorized_builders: Vec<BlockBuilderIdentityConfig<P>>,
+    pub authorized_builder: Option<ExternalBlockBuilderIdentityConfig<P>>,
 
     /// Maximum age of builder bundles in seconds (replay protection)
     #[serde(default = "default_max_bundle_age_secs")]
@@ -50,7 +39,7 @@ pub struct BlockBuilderConfig<P: PubKey> {
 /// Configuration for an authorized block builder identity
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct BlockBuilderIdentityConfig<P: PubKey> {
+pub struct ExternalBlockBuilderIdentityConfig<P: PubKey> {
     /// Human-readable name for this builder (optional)
     pub name: Option<String>,
 
@@ -61,26 +50,16 @@ pub struct BlockBuilderIdentityConfig<P: PubKey> {
     pub pubkey: P,
 }
 
-impl<P: PubKey> Default for BlockBuilderConfig<P> {
+impl<P: PubKey> Default for ExternalBlockBuilderConfig<P> {
     fn default() -> Self {
         Self {
             enabled: false,
-            max_builder_txs: default_max_builder_txs(),
-            max_pool_size: default_max_pool_size(),
-            api_endpoint: None,
-            authorized_builders: Vec::new(),
+            authorized_builder: None,
             max_bundle_age_secs: default_max_bundle_age_secs(),
         }
     }
 }
 
-fn default_max_builder_txs() -> usize {
-    1000
-}
-
-fn default_max_pool_size() -> usize {
-    5000
-}
 
 fn default_max_bundle_age_secs() -> u64 {
     300 // 5 minutes

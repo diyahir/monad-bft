@@ -152,7 +152,10 @@ fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema
     .into()
 }
 
-#[rpc(method = "eth_getLogs", ignore = "max_block_range")]
+#[rpc(
+    method = "eth_getLogs",
+    ignore = "max_block_range,use_eth_get_logs_index,dry_run_get_logs_index,max_finalized_block_cache_len"
+)]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 #[tracing::instrument(level = "debug", skip_all)]
@@ -188,7 +191,10 @@ pub struct MonadEthSendRawTransactionParams {
 
 const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
-#[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
+#[rpc(
+    method = "eth_sendRawTransaction",
+    ignore = "tx_pool,ipc,chain_id,allow_unprotected_txs"
+)]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
@@ -245,9 +251,7 @@ pub async fn monad_eth_sendRawTransaction(
                     TxStatus::Dropped { reason } => {
                         return Err(JsonRpcError::custom(reason.as_user_string()))
                     }
-                    TxStatus::Pending | TxStatus::Tracked | TxStatus::Committed => {
-                        return Ok(hash.to_string())
-                    }
+                    TxStatus::Tracked | TxStatus::Committed => return Ok(hash.to_string()),
                     TxStatus::Unknown => {
                         error!("txpool bridge sent unknown status");
                     }
@@ -390,34 +394,55 @@ pub struct MonadSubmitBuilderBundleParams {
 ///   "id": 1
 /// }
 /// ```
-pub async fn monad_submitBuilderBundle(
+pub async fn monad_submitBuilderBundle_impl(
     app_state: &crate::handlers::resources::MonadRpcResources,
     params: MonadSubmitBuilderBundleParams,
 ) -> JsonRpcResult<Box<serde_json::value::RawValue>> {
-    trace!("monad_submitBuilderBundle: {params:?}");
+    debug!("monad_submitBuilderBundle called");
+    debug!("  Signer: {}", params.signer);
+    debug!("  Timestamp: {}", params.timestamp);
+    debug!("  Num transactions: {}", params.transactions.len());
+    debug!("  Signature length: {}", params.signature.len());
 
     // Parse the signature
     let signature_bytes = hex::decode(&params.signature)
-        .map_err(|_| JsonRpcError::custom("Invalid signature hex format".to_string()))?;
+        .map_err(|e| {
+            warn!("Failed to decode signature hex: {}", e);
+            JsonRpcError::custom("Invalid signature hex format".to_string())
+        })?;
+    debug!("  Signature bytes length: {}", signature_bytes.len());
     
     // Parse the signer public key
     let signer_bytes = hex::decode(&params.signer)
-        .map_err(|_| JsonRpcError::custom("Invalid signer public key hex format".to_string()))?;
+        .map_err(|e| {
+            warn!("Failed to decode signer public key hex: {}", e);
+            JsonRpcError::custom("Invalid signer public key hex format".to_string())
+        })?;
+    debug!("  Signer bytes length: {}", signer_bytes.len());
     
     // Parse transactions
     let mut parsed_transactions = Vec::new();
     for (i, tx_hex) in params.transactions.iter().enumerate() {
         let tx_bytes = hex::decode(tx_hex)
-            .map_err(|_| JsonRpcError::custom(format!("Invalid transaction hex format at index {}", i)))?;
+            .map_err(|e| {
+                warn!("Failed to decode transaction {} hex: {}", i, e);
+                JsonRpcError::custom(format!("Invalid transaction hex format at index {}", i))
+            })?;
         
         let tx = TxEnvelope::decode(&mut &tx_bytes[..])
-            .map_err(|e| JsonRpcError::custom(format!("Failed to decode transaction at index {}: {}", i, e)))?;
+            .map_err(|e| {
+                warn!("Failed to decode transaction {} envelope: {}", i, e);
+                JsonRpcError::custom(format!("Failed to decode transaction at index {}: {}", i, e))
+            })?;
         
+        debug!("  Parsed transaction {}: {:?}", i, tx.tx_hash());
         parsed_transactions.push(tx);
     }
 
-    // Create the builder bundle request
-    let bundle_request = monad_eth_txpool::builder::BuilderTxBundleRequest {
+    debug!("Successfully parsed all bundle parameters, sending to txpool...");
+
+    // Create the external builder bundle request
+    let bundle_request = monad_eth_txpool::builder::ExternalBuilderBundleRequest {
         transactions: params.transactions,
         signature: params.signature,
         signer: params.signer,
@@ -434,21 +459,28 @@ pub async fn monad_submitBuilderBundle(
         ));
     }
 
+    debug!("Bundle request sent to txpool via IPC, awaiting response...");
+
     match tokio::time::timeout(Duration::from_secs(2), bundle_status_recv).await {
-        Ok(Ok(Ok(_))) => {
+        Ok(Ok(Ok(num_added))) => {
             debug!(
-                "Successfully submitted builder bundle to transaction pool"
+                "Successfully submitted builder bundle to transaction pool, {} transactions added",
+                num_added
             );
             // Return success - actual validation and inclusion will be handled by the transaction pool
             let result = serde_json::json!({"status": "submitted"});
             Ok(serde_json::value::to_raw_value(&result).unwrap())
         }
         Ok(Ok(Err(error_msg))) => {
-            warn!(error = %error_msg, "Builder bundle submission failed");
+            warn!(error = %error_msg, "Builder bundle submission rejected by txpool");
             Err(JsonRpcError::custom(error_msg))
         }
-        Ok(Err(_)) | Err(_) => {
-            warn!("txpool not responding to builder bundle submission");
+        Ok(Err(_)) => {
+            warn!("txpool channel closed unexpectedly");
+            Err(JsonRpcError::custom("txpool channel closed".to_string()))
+        }
+        Err(_) => {
+            warn!("txpool not responding to builder bundle submission (timeout)");
             Err(JsonRpcError::custom("txpool not responding".to_string()))
         }
     }

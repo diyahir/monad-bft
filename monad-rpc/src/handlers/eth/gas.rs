@@ -26,7 +26,6 @@ use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
 use serde::Deserialize;
-use tokio::sync::Mutex;
 use tracing::trace;
 
 use crate::{
@@ -43,7 +42,7 @@ trait EthCallProvider {
     async fn eth_call(
         &self,
         txn: TxEnvelope,
-        eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+        eth_call_executor: Option<Arc<EthCallExecutor>>,
     ) -> CallResult;
 }
 
@@ -80,7 +79,7 @@ impl EthCallProvider for GasEstimator {
     async fn eth_call(
         &self,
         txn: TxEnvelope,
-        eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+        eth_call_executor: Option<Arc<EthCallExecutor>>,
     ) -> CallResult {
         let (block_number, block_id) = match self.block_key {
             BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
@@ -111,7 +110,7 @@ impl EthCallProvider for GasEstimator {
 
 async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
-    eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+    eth_call_executor: Option<Arc<EthCallExecutor>>,
     call_request: &mut CallRequest,
     original_tx_gas: U256,
     provider_gas_limit: u64,
@@ -224,14 +223,13 @@ pub struct MonadEthEstimateGasParams {
 
 #[rpc(
     method = "eth_estimateGas",
-    ignore = "chain_id",
-    ignore = "eth_call_executor"
+    ignore = "chain_id,provider_gas_limit,eth_call_executor"
 )]
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb>(
     triedb_env: &T,
-    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    eth_call_executor: Arc<EthCallExecutor>,
     chain_id: u64,
     provider_gas_limit: u64,
     params: MonadEthEstimateGasParams,
@@ -257,14 +255,8 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         ));
     }
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block);
-    let version_exist = triedb_env
-        .get_state_availability(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?;
-    if !version_exist {
-        return Err(JsonRpcError::block_not_found());
-    }
+    let block_key =
+        get_block_key_from_tag(triedb_env, params.block).ok_or(JsonRpcError::block_not_found())?;
 
     let mut header = match triedb_env
         .get_block_header(block_key)
@@ -272,11 +264,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
     {
         Some(header) => header,
-        None => {
-            return Err(JsonRpcError::internal_error(
-                "error getting block header".into(),
-            ))
-        }
+        None => return Err(JsonRpcError::block_not_found()),
     };
 
     let gas_specified = params.tx.gas.is_some();
@@ -477,11 +465,7 @@ mod tests {
     }
 
     impl EthCallProvider for MockGasEstimator {
-        async fn eth_call(
-            &self,
-            txn: TxEnvelope,
-            _: Option<Arc<Mutex<EthCallExecutor>>>,
-        ) -> CallResult {
+        async fn eth_call(&self, txn: TxEnvelope, _: Option<Arc<EthCallExecutor>>) -> CallResult {
             if txn.gas_limit() >= self.gas_used + self.gas_refund {
                 CallResult::Success(SuccessCallResult {
                     gas_used: self.gas_used,

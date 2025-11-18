@@ -47,7 +47,7 @@ use monad_crypto::certificate_signature::{
 use monad_state_backend::StateBackend;
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget,
-    SeqNum, Stake,
+    SeqNum, Stake, UdpPriority,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,12 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     Publish {
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
+    },
+    PublishWithPriority {
+        // NOTE(dshulyak) priority for tcp messages is ignored
+        target: RouterTarget<CertificateSignaturePubKey<ST>>,
+        message: OM,
+        priority: UdpPriority,
     },
     PublishToFullNodes {
         epoch: Epoch, // Epoch gets embedded into the raptorcast message
@@ -72,7 +78,8 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     GetPeers,
     UpdatePeers {
         peer_entries: Vec<PeerEntry<ST>>,
-        pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     },
     GetFullNodes,
     UpdateFullNodes {
@@ -87,6 +94,15 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::Publish { target, message: _ } => {
                 f.debug_struct("Publish").field("target", target).finish()
             }
+            Self::PublishWithPriority {
+                target,
+                message: _,
+                priority,
+            } => f
+                .debug_struct("PublishWithPriority")
+                .field("target", target)
+                .field("priority", priority)
+                .finish(),
             Self::PublishToFullNodes { epoch, message: _ } => f
                 .debug_struct("PublishToFullNodes")
                 .field("epoch", epoch)
@@ -107,11 +123,13 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::GetPeers => write!(f, "GetPeers"),
             Self::UpdatePeers {
                 peer_entries,
-                pinned_nodes,
+                dedicated_full_nodes,
+                prioritized_full_nodes,
             } => f
                 .debug_struct("UpdatePeers")
                 .field("peer_entries", peer_entries)
-                .field("pinned_nodes", pinned_nodes)
+                .field("dedicated_full_nodes", dedicated_full_nodes)
+                .field("prioritized_full_nodes", prioritized_full_nodes)
                 .finish(),
             Self::GetFullNodes => write!(f, "GetFullNodes"),
             Self::UpdateFullNodes {
@@ -869,6 +887,7 @@ where
     },
     /// Events for secondary raptorcast updates
     SecondaryRaptorcastPeersUpdate {
+        expiry_round: Round,
         confirm_group_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
     },
 }
@@ -912,9 +931,11 @@ where
                 .field("response", response)
                 .finish(),
             Self::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
                 confirm_group_peers,
             } => f
                 .debug_struct("BlockSyncSecondaryRaptorcastEvent")
+                .field("expiry_round", expiry_round)
                 .field("confirm_group_peers", confirm_group_peers)
                 .finish(),
             Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
@@ -961,9 +982,10 @@ where
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
             Self::SecondaryRaptorcastPeersUpdate {
+                expiry_round,
                 confirm_group_peers,
             } => {
-                let enc: [&dyn Encodable; 2] = [&7u8, &confirm_group_peers];
+                let enc: [&dyn Encodable; 3] = [&7u8, &expiry_round, &confirm_group_peers];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -1013,8 +1035,10 @@ where
                 Ok(Self::SelfResponse { response })
             }
             7 => {
+                let expiry_round = Round::decode(&mut payload)?;
                 let confirm_group_peers = Vec::<NodeId<SCT::NodeIdPubKey>>::decode(&mut payload)?;
                 Ok(Self::SecondaryRaptorcastPeersUpdate {
+                    expiry_round,
                     confirm_group_peers,
                 })
             }
@@ -1911,7 +1935,8 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub known_peers: Vec<PeerEntry<ST>>,
-    pub pinned_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub prioritized_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2212,6 +2237,24 @@ where
 {
     pub timestamp: DateTime<Utc>,
     pub event: MonadEvent<ST, SCT, EPT>,
+}
+
+impl<ST, SCT, EPT> LogFriendlyMonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn deserialize_timestamp(data: &[u8]) -> DateTime<Utc> {
+        // TODO consolidate with the similar code in deserialize impl
+        let mut offset = 0;
+        let header: [u8; 4] = data[0..EVENT_HEADER_LEN].try_into().unwrap();
+        let ts_size = EventHeaderType::from_le_bytes(header) as usize;
+        offset += EVENT_HEADER_LEN;
+
+        let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
+        ts
+    }
 }
 
 type EventHeaderType = u32;

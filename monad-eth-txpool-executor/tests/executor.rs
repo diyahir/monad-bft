@@ -87,7 +87,7 @@ async fn setup_txpool_executor_with_client() -> (
         GENESIS_ROUND,
         GENESIS_TIMESTAMP as u64,
         true,
-        monad_node_config::BlockBuilderConfig::default(),
+        monad_node_config::ExternalBlockBuilderConfig::default(),
     )
     .unwrap();
 
@@ -101,11 +101,9 @@ async fn setup_txpool_executor_with_client() -> (
         )],
     }]);
 
-    let (ipc_client, EthTxPoolSnapshot { pending, tracked }) =
-        EthTxPoolIpcClient::new(bind_path).await.unwrap();
+    let (ipc_client, EthTxPoolSnapshot { txs }) = EthTxPoolIpcClient::new(bind_path).await.unwrap();
 
-    assert!(pending.is_empty());
-    assert!(tracked.is_empty());
+    assert!(txs.is_empty());
 
     (txpool_executor, ipc_client)
 }

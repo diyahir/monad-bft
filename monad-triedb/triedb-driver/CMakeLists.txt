@@ -19,11 +19,13 @@ set_target_properties(monad_execution_local PROPERTIES
 add_subdirectory("../../monad-cxx/monad-execution" "monad-execution-build"
 )# needed for monad-trie
 
-# Create interface library for ankerl_hash (header-only library)
-add_library(ankerl_hash INTERFACE)
-target_include_directories(ankerl_hash INTERFACE 
-    "${PROJECT_SOURCE_DIR}/../../monad-cxx/monad-execution/category/core/third_party/ankerl"
-)
+# Create interface library for ankerl_hash (header-only library) only if it doesn't exist
+if(NOT TARGET ankerl_hash)
+    add_library(ankerl_hash INTERFACE)
+    target_include_directories(ankerl_hash INTERFACE 
+        "${PROJECT_SOURCE_DIR}/../../monad-cxx/monad-execution/category/core/third_party/ankerl"
+    )
+endif()
 
 add_library(triedb_driver SHARED "${PROJECT_SOURCE_DIR}/include/triedb.h"
                                  "${PROJECT_SOURCE_DIR}/src/triedb.cpp")

@@ -40,18 +40,33 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
+alloy-primitives = { workspace = true }
 
+byte-unit = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-rstest = { workspace = true }
 criterion = { workspace = true }
+eyre = { workspace = true }
 futures-util = { workspace = true }
+humantime = { workspace = true }
 insta = { workspace = true }
+rand_distr = { workspace = true }
+rstest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tikv-jemallocator = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+toml = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
 name = "raptor_bench"
 harness = false
 
+[[bench]]
+name = "encode_bench"
+harness = false
+
 [[example]]
 name = "service"
+
+[[example]]
+name = "latency"

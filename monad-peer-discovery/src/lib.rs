@@ -165,7 +165,8 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         peers: Vec<PeerEntry<ST>>,
     },
     UpdatePinnedNodes {
-        pinned_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+        prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     },
     UpdateConfirmGroup {
         end_round: Round,
@@ -305,7 +306,8 @@ pub trait PeerDiscoveryAlgo {
 
     fn update_pinned_nodes(
         &mut self,
-        pinned_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
+        dedicated_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
+        prioritized_full_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn update_peer_participation(
@@ -330,9 +332,9 @@ pub trait PeerDiscoveryAlgo {
         &self,
     ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
 
-    fn get_secondary_fullnode_addrs(
+    fn get_secondary_fullnodes(
         &self,
-    ) -> HashMap<NodeId<CertificateSignaturePubKey<Self::SignatureType>>, SocketAddrV4>;
+    ) -> Vec<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>;
 
     fn get_name_records(
         &self,

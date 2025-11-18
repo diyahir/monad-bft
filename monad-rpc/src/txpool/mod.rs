@@ -26,7 +26,7 @@ use flume::Receiver;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
-use monad_eth_txpool::builder::BuilderTxBundleRequest;
+use monad_eth_txpool::builder::ExternalBuilderBundleRequest;
 use monad_eth_txpool_types::BuilderBundleIpcMessage;
 use pin_project::pin_project;
 use state::TxStatusSender;
@@ -101,7 +101,7 @@ impl EthTxPoolBridge {
     async fn run(
         mut self, 
         tx_receiver: Receiver<(TxEnvelope, TxStatusSender)>,
-        builder_bundle_receiver: Receiver<(BuilderTxBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>
+        builder_bundle_receiver: Receiver<(ExternalBuilderBundleRequest, tokio::sync::oneshot::Sender<Result<usize, String>>)>
     ) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 

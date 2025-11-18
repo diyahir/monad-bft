@@ -21,23 +21,51 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
+use futures::future::join_all;
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg};
 use crate::buffer_ext::SocketBufferExt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum UdpMessageType {
     Broadcast,
     Direct,
 }
 
-// When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
-// https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
-pub const DEFAULT_MTU: u16 = 1480;
+struct PriorityQueues {
+    queues: [VecDeque<UdpMsg>; 2],
+}
+
+impl PriorityQueues {
+    fn new() -> Self {
+        Self {
+            queues: [VecDeque::new(), VecDeque::new()],
+        }
+    }
+
+    fn push(&mut self, msg: UdpMsg) {
+        self.queues[msg.priority as usize].push_back(msg);
+    }
+
+    fn pop_highest_priority(&mut self) -> Option<UdpMsg> {
+        for queue in self.queues.iter_mut() {
+            if let Some(msg) = queue.pop_front() {
+                return Some(msg);
+            }
+        }
+        None
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queues.iter().all(|q| q.is_empty())
+    }
+}
+
+pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
 
 const IPV4_HDR_SIZE: u16 = 20;
 const UDP_HDR_SIZE: u16 = 8;
@@ -48,7 +76,7 @@ pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
 pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
 
 const ETHERNET_MTU: u16 = 1500;
-const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
+pub const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
 
 fn configure_socket(socket: &UdpSocket, buffer_size: Option<usize>) {
     if let Some(size) = buffer_size {
@@ -108,7 +136,7 @@ pub(crate) fn spawn_tasks(
     direct_socket_port: Option<u16>,
     udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
     udp_direct_ingress_tx: mpsc::Sender<RecvUdpMsg>,
-    udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     buffer_size: Option<usize>,
 ) {
@@ -192,43 +220,18 @@ const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(
 async fn tx(
     socket_tx: UdpSocket,
     direct_socket_tx: Option<UdpSocket>,
-    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, UdpMsg)>,
+    mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
 ) {
-    let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
-    set_udp_segment_size(&socket_tx, udp_segment_size);
-    if let Some(ref direct_socket) = direct_socket_tx {
-        set_udp_segment_size(direct_socket, udp_segment_size);
-    }
-    let mut max_chunk: u16 = max_write_size_for_segment_size(udp_segment_size);
-
     let mut next_transmit = Instant::now();
 
-    let mut messages_to_send: VecDeque<(SocketAddr, Bytes, u16, UdpMessageType)> = VecDeque::new();
+    let mut priority_queues = PriorityQueues::new();
+
+    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
+    let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
 
     loop {
-        while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
-            let Some((addr, udp_msg)) = udp_egress_rx.recv().await else {
-                return;
-            };
-
-            messages_to_send.push_back((addr, udp_msg.payload, udp_msg.stride, udp_msg.msg_type));
-        }
-
-        let (addr, mut payload, stride, msg_type) = messages_to_send.pop_front().unwrap();
-
-        if udp_segment_size != stride {
-            udp_segment_size = stride;
-            set_udp_segment_size(&socket_tx, udp_segment_size);
-            max_chunk = max_write_size_for_segment_size(udp_segment_size);
-        }
-
-        // Transmit the first max_chunk bytes of this (addr, payload) pair.
-        let chunk = payload.split_to(payload.len().min(max_chunk.into()));
-        let chunk_len = chunk.len();
-
         let now = Instant::now();
-
         if next_transmit > now {
             time::sleep(next_transmit - now).await;
         } else {
@@ -239,90 +242,117 @@ async fn tx(
             }
         }
 
-        let socket = match (&msg_type, &direct_socket_tx) {
-            (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
-            _ => &socket_tx,
-        };
+        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues)
+            .await
+            .is_err()
+        {
+            return;
+        }
 
-        let (ret, chunk) = socket.send_to(chunk, addr).await;
+        let queue_len = priority_queues
+            .queues
+            .iter()
+            .map(|q| q.len())
+            .sum::<usize>();
+        let mut total_bytes = 0usize;
+        let mut batch_count = 0usize;
+        send_futures.clear();
 
-        if let Err(err) = &ret {
-            match err.kind() {
-                // ENETUNREACH is returned when trying to send to an IPv4 address from a
-                // socket bound to a local IPv6 address.
-                ErrorKind::NetworkUnreachable => debug!(
-                    local_addr =? socket.local_addr().unwrap(),
-                    ?addr,
-                    "send address family mismatch. message is dropped"
-                ),
+        while !priority_queues.is_empty()
+            && total_bytes < max_batch_bytes
+            && batch_count < MAX_AGGREGATED_SEGMENTS as usize
+        {
+            let mut msg = priority_queues.pop_highest_priority().unwrap();
+            let chunk_size = msg
+                .payload
+                .len()
+                .min(msg.stride as usize)
+                .min(max_batch_bytes);
 
-                // TODO: An EINVAL return is likely due to MTU/GSO issues -- we should fall
-                // back to disabling GSO for this chunk and transmitting the constituent
-                // segments individually.
-                ErrorKind::InvalidInput => warn!(
-                    local_addr =? socket.local_addr().unwrap(),
-                    udp_segment_size,
-                    max_chunk,
-                    ?addr,
-                    len = chunk.len(),
-                    "got EINVAL on send. message is dropped"
-                ),
+            if chunk_size + total_bytes > max_batch_bytes {
+                priority_queues.push(msg);
+                break;
+            }
 
-                // EAFNOSUPPORT is returned when trying to send to an IPv6 address from a
-                // socket bound to an IPv4 address.
-                //
-                // EAFNOSUPPORT is returned as ErrorKind::Uncategorized, which can't be
-                // matched against, so it has to be tested for under the wildcard match.
-                _ => {
-                    if is_eafnosupport(err) {
-                        debug!(
-                            local_addr =? socket.local_addr().unwrap(),
-                            ?addr,
-                            "send address family mismatch. message is dropped"
-                        );
-                    } else {
-                        error!(
-                            local_addr =? socket.local_addr().unwrap(),
-                            udp_segment_size,
-                            max_chunk,
-                            ?addr,
-                            len = chunk.len(),
-                            ?err,
-                            "unexpected send error. message is dropped"
-                        );
+            let chunk = msg.payload.split_to(chunk_size);
+            total_bytes += chunk.len();
+
+            let socket = match (&msg.msg_type, &direct_socket_tx) {
+                (UdpMessageType::Direct, Some(direct_socket)) => direct_socket,
+                _ => &socket_tx,
+            };
+
+            let dst = msg.dst;
+            let msg_type = msg.msg_type;
+
+            if !msg.payload.is_empty() {
+                priority_queues.push(msg);
+            }
+
+            trace!(
+                dst_addr = ?dst,
+                chunk_len = chunk.len(),
+                msg_type = ?msg_type,
+                "preparing udp send"
+            );
+
+            send_futures.push(socket.send_to(chunk, dst));
+            batch_count += 1;
+        }
+
+        if batch_count > 1 {
+            trace!(
+                batch_size = batch_count,
+                total_bytes = total_bytes,
+                queue_size = queue_len,
+                "sending udp batch"
+            );
+        }
+
+        for (ret, chunk) in join_all(send_futures.drain(..)).await {
+            if let Err(err) = &ret {
+                match err.kind() {
+                    ErrorKind::NetworkUnreachable => {
+                        debug!("send address family mismatch. message is dropped")
+                    }
+                    ErrorKind::InvalidInput => {
+                        warn!(len = chunk.len(), "got EINVAL on send. message is dropped")
+                    }
+                    _ => {
+                        if is_eafnosupport(err) {
+                            debug!("send address family mismatch. message is dropped");
+                        } else {
+                            error!(
+                                len = chunk.len(),
+                                ?err,
+                                "unexpected send error. message is dropped"
+                            );
+                        }
                     }
                 }
             }
         }
 
-        // the remainder of the message is re-queued only if the send is succesful
-        if ret.is_ok() {
+        if total_bytes > 0 {
             next_transmit +=
-                Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
-
-            // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
-            if !payload.is_empty() {
-                messages_to_send.push_back((addr, payload, stride, msg_type));
-            }
+                Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
         }
     }
 }
 
-fn set_udp_segment_size(socket: &UdpSocket, udp_segment_size: u16) {
-    let udp_segment_size: libc::c_int = udp_segment_size as i32;
-
-    if unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_UDP,
-            libc::UDP_SEGMENT,
-            &udp_segment_size as *const _ as _,
-            std::mem::size_of_val(&udp_segment_size) as _,
-        )
-    } != 0
-    {
-        panic!("set UDP_SEGMENT failed with: {}", Error::last_os_error());
+async fn fill_message_queues(
+    udp_egress_rx: &mut mpsc::Receiver<UdpMsg>,
+    priority_queues: &mut PriorityQueues,
+) -> Result<(), ()> {
+    while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
+        match udp_egress_rx.recv().await {
+            Some(udp_msg) => {
+                priority_queues.push(udp_msg);
+            }
+            None => return Err(()),
+        }
     }
+    Ok(())
 }
 
 const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;

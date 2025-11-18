@@ -51,15 +51,13 @@ use monad_eth_types::{
 };
 use monad_secp::RecoverableAddress;
 use monad_state_backend::StateBackend;
-use monad_system_calls::{
-    validator::SystemTransactionValidator, SystemTransaction, SYSTEM_SENDER_ETH_ADDRESS,
-};
+use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use tracing::{debug, trace, trace_span, warn};
 
-type SystemTransactions = Vec<SystemTransaction>;
+type SystemTransactions = Vec<ValidatedTx>;
 type ValidatedTxns = Vec<ValidatedTx>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -308,19 +306,20 @@ where
             .collect::<Result<_, monad_secp::Error>>()
             .map_err(|_err| BlockValidationError::TxnError)?;
 
-        let (system_txns, eth_txns) =
-            match SystemTransactionValidator::validate_and_extract_system_transactions(
-                header,
-                recovered_txns,
-                chain_config,
-            ) {
-                Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
-                Err(err) => {
-                    debug!(?err, "system transaction validator error");
-
-                    return Err(BlockValidationError::SystemTxnError);
-                }
-            };
+        let (system_txns, eth_txns) = match SystemTransactionValidator::extract_system_transactions(
+            header,
+            recovered_txns,
+            chain_config,
+        ) {
+            Ok((system_txns, eth_txns)) => (system_txns, eth_txns),
+            Err(system_txn_error) => {
+                debug!(
+                    ?system_txn_error,
+                    "failed to extract system transactions from block"
+                );
+                return Err(BlockValidationError::SystemTxnError);
+            }
+        };
 
         // early return if proposal size exceed limit
         let system_txns_size: usize = system_txns.iter().map(|tx| tx.length()).sum();
@@ -339,7 +338,6 @@ where
 
         let mut nonce_usages = NonceUsageMap::default();
 
-        // duplicate check. this is also done in SystemTransactionValidator
         for sys_txn in &system_txns {
             let maybe_old_nonce_usage = nonce_usages.add_known(sys_txn.signer(), sys_txn.nonce());
             // A block is invalid if we see a smaller or equal nonce
@@ -424,7 +422,7 @@ where
                     NonceUsage::Known(old_nonce) => {
                         let Some(expected_nonce) = eth_txn.nonce().checked_sub(1) else {
                             // eth_txn replaced tx with nonce `old_nonce` but
-                            // `eth_txn.nonce() == 0` so old tx muts be invalid
+                            // `eth_txn.nonce() == 0` so old tx must be invalid
                             return Err(BlockValidationError::TxnError);
                         };
 
@@ -478,8 +476,13 @@ where
                     match nonce_usages.entry(authority) {
                         BTreeMapEntry::Occupied(nonce_usage) => match nonce_usage.into_mut() {
                             NonceUsage::Known(nonce) => {
-                                if *nonce + 1 == recovered_auth.nonce() {
-                                    *nonce += 1;
+                                if let Some(next) = nonce.checked_add(1) {
+                                    if next == recovered_auth.nonce() {
+                                        *nonce = next;
+                                    }
+                                } else {
+                                    // nonce overflow, invalid
+                                    return Err(BlockValidationError::TxnError);
                                 }
                             }
                             NonceUsage::Possible(possible_nonces) => {
@@ -618,6 +621,47 @@ mod test {
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
         let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 3, 10);
+
+        // create a block with the above transactions
+        let txs = vec![txn1, txn2];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+        let header = get_header(payload.get_id());
+
+        // block validation should return error
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_with_max_nonce() {
+        // txn1 with max nonce while txn2 is a 7702 transaction with any nonce from the same signer
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, u64::MAX, 10);
+
+        let auth_list = vec![make_signed_authorization(
+            B256::repeat_byte(0xAu8),
+            secret_to_eth_address(B256::repeat_byte(0x1u8)),
+            1,
+        )];
+        let txn2 = make_eip7702_tx(
+            B256::repeat_byte(0xBu8),
+            BASE_FEE,
+            0,
+            1_000_000,
+            1,
+            auth_list,
+            0,
+        );
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];

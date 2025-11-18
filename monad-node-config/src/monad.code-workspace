@@ -1,10 +1,10 @@
 {
 	"folders": [
 		{
-			"path": "../../../monad"
+			"path": "../.."
 		},
 		{
-			"path": "../.."
+			"path": "../../../rbuilder-private"
 		}
 	],
 	"settings": {

@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    chainstate::{get_block_key_from_tag, ChainState},
+    chainstate::{get_block_key_from_tag, get_latest_block_key, ChainState},
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
         UnformattedData,
@@ -123,7 +123,7 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
             .into_iter()
             .map(|r| {
                 let mut res = Vec::new();
-                r.encode(&mut res);
+                r.encode_2718(&mut res);
                 hex::encode(&res)
             })
             .collect();
@@ -409,13 +409,15 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
 
-    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
+    let latest_block_key = get_latest_block_key(triedb_env);
     if let Some(block_num) = triedb_env
         .get_block_number_by_hash(latest_block_key, params.block_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        let block_key = triedb_env.get_block_key(SeqNum(block_num));
+        let block_key = triedb_env
+            .get_block_key(SeqNum(block_num))
+            .ok_or(JsonRpcError::block_not_found())?;
         if let Ok(result) = get_call_frames_from_triedb(triedb_env, block_key, &params.tracer).await
         {
             return Ok(result);
@@ -485,7 +487,8 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number)
+        .ok_or(JsonRpcError::block_not_found())?;
     if let Ok(result) = get_call_frames_from_triedb(triedb_env, block_key, &params.tracer).await {
         return Ok(result);
     }
@@ -519,7 +522,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
         }
     }
 
-    Err(JsonRpcError::internal_error("block not found".into()))
+    Err(JsonRpcError::block_not_found())
 }
 
 #[rpc(method = "debug_traceTransaction")]
@@ -532,13 +535,15 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
+    let latest_block_key = get_latest_block_key(triedb_env);
     if let Some(tx_loc) = triedb_env
         .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num));
+        let block_key = triedb_env
+            .get_block_key(SeqNum(tx_loc.block_num))
+            .ok_or(JsonRpcError::block_not_found())?;
         if let Some(rlp_call_frame) = triedb_env
             .get_call_frame(block_key, tx_loc.tx_index)
             .await
@@ -731,9 +736,11 @@ async fn build_call_tree(
 
 #[cfg(test)]
 mod tests {
+    use alloy_consensus::ReceiptWithBloom;
+    use alloy_primitives::Bloom;
     use monad_triedb_utils::{
         mock_triedb,
-        triedb_env::{EthTxHash, TransactionLocation},
+        triedb_env::{EthTxHash, ReceiptWithLogIndex, TransactionLocation},
     };
 
     use super::*;
@@ -1061,5 +1068,39 @@ mod tests {
         assert_eq!(resp.input.0, *hex::decode("0xaabbccddee01").unwrap());
         assert_eq!(resp.output.0, *hex::decode("0x0102").unwrap());
         assert_eq!(resp.depth, 2);
+    }
+
+    #[tokio::test]
+    async fn debug_raw_receipts() {
+        let mut mock_triedb = mock_triedb::MockTriedb::default();
+        mock_triedb.set_latest_block(1);
+
+        let receipt = ReceiptWithBloom {
+            receipt: alloy_consensus::Receipt {
+                status: alloy_consensus::Eip658Value::Eip658(true),
+                cumulative_gas_used: 21000,
+                logs: vec![],
+            },
+            logs_bloom: Bloom::default(),
+        };
+
+        mock_triedb.set_receipts(vec![ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(receipt),
+            starting_log_index: 0,
+        }]);
+
+        let chain_state = ChainState::new(None, mock_triedb, None);
+        let result = monad_debug_getRawReceipts(
+            &chain_state,
+            DebugBlockParams {
+                block: BlockTags::Number(Quantity(1)),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.receipts.len(), 1);
+        let expected_receipt = "0x02f9010801825208b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0";
+        assert_eq!(result.receipts[0], expected_receipt);
     }
 }

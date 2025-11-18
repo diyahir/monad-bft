@@ -26,7 +26,7 @@ use std::{
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
-use monad_eth_txpool::builder::SignedBuilderTxBundle;
+use monad_eth_txpool::builder::SignedExternalBuilderBundle;
 use monad_eth_txpool_types::BuilderBundleIpcMessage;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -37,7 +37,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType};
-use monad_node_config::BlockBuilderConfig;
+use monad_node_config::ExternalBlockBuilderConfig;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -63,8 +63,6 @@ mod metrics;
 mod preload;
 mod reset;
 
-const PROMOTE_PENDING_INTERVAL_MS: u64 = 2;
-
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -86,7 +84,6 @@ where
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
     preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
-    promote_pending_timer: tokio::time::Interval,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
     executor_metrics: ExecutorMetrics,
@@ -94,40 +91,75 @@ where
     _phantom: PhantomData<CRT>,
 }
 
-/// Convert IPC builder bundle message to SignedBuilderTxBundle
-fn convert_builder_bundle<ST>(bundle: BuilderBundleIpcMessage) -> Result<SignedBuilderTxBundle<ST>, String>
+/// Convert IPC builder bundle message to SignedExternalBuilderBundle
+fn convert_builder_bundle<ST>(bundle: BuilderBundleIpcMessage) -> Result<SignedExternalBuilderBundle<ST>, String>
 where
     ST: CertificateSignatureRecoverable,
 {
+    debug!("Converting builder bundle:");
+    debug!("  Signature hex length: {}", bundle.signature.len());
+    debug!("  Signer hex length: {}", bundle.signer.len());
+    
     // Parse signature
     let signature_bytes = hex::decode(&bundle.signature)
-        .map_err(|e| format!("Invalid signature hex: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to decode signature hex: {}", e);
+            format!("Invalid signature hex: {}", e)
+        })?;
+    debug!("  Signature bytes length: {}", signature_bytes.len());
+    
     let signature = <ST as monad_crypto::certificate_signature::CertificateSignature>::deserialize(&signature_bytes)
-        .map_err(|e| format!("Invalid signature format: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to deserialize signature: {}", e);
+            format!("Invalid signature format: {}", e)
+        })?;
+    debug!("  Signature deserialized successfully");
     
     // Parse signer public key
     let signer_bytes = hex::decode(&bundle.signer)
-        .map_err(|e| format!("Invalid signer hex: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to decode signer hex: {}", e);
+            format!("Invalid signer hex: {}", e)
+        })?;
+    debug!("  Signer bytes length: {}", signer_bytes.len());
+    
     let signer = CertificateSignaturePubKey::<ST>::from_bytes(&signer_bytes)
-        .map_err(|e| format!("Invalid signer format: {}", e))?;
+        .map_err(|e| {
+            warn!("Failed to parse signer public key: {}", e);
+            format!("Invalid signer format: {}", e)
+        })?;
+    debug!("  Signer public key parsed successfully");
     
     // Parse and recover transactions
     let mut recovered_transactions = Vec::new();
     for (i, tx_hex) in bundle.transactions.iter().enumerate() {
         let tx_bytes = hex::decode(tx_hex)
-            .map_err(|e| format!("Invalid transaction hex at index {}: {}", i, e))?;
+            .map_err(|e| {
+                warn!("Failed to decode transaction {} hex: {}", i, e);
+                format!("Invalid transaction hex at index {}: {}", i, e)
+            })?;
         
         let tx = TxEnvelope::decode(&mut &tx_bytes[..])
-            .map_err(|e| format!("Failed to decode transaction at index {}: {}", i, e))?;
+            .map_err(|e| {
+                warn!("Failed to decode transaction {} envelope: {}", i, e);
+                format!("Failed to decode transaction at index {}: {}", i, e)
+            })?;
         
-        let signer = tx.secp256k1_recover()
-            .map_err(|_| format!("Failed to recover signer for transaction at index {}", i))?;
+        let tx_signer = tx.secp256k1_recover()
+            .map_err(|_| {
+                warn!("Failed to recover signer for transaction {}", i);
+                format!("Failed to recover signer for transaction at index {}", i)
+            })?;
         
-        let recovered = Recovered::new_unchecked(tx, signer);
+        debug!("  Transaction {} recovered, hash: {:?}", i, tx.tx_hash());
+        
+        let recovered = Recovered::new_unchecked(tx, tx_signer);
         recovered_transactions.push(recovered);
     }
     
-    Ok(SignedBuilderTxBundle {
+    debug!("Successfully converted bundle with {} transactions", recovered_transactions.len());
+    
+    Ok(SignedExternalBuilderBundle {
         transactions: recovered_transactions,
         signature,
         signer,
@@ -155,7 +187,7 @@ where
         round: Round,
         execution_timestamp_s: u64,
         do_local_insert: bool,
-        builder_config: BlockBuilderConfig<CertificateSignaturePubKey<ST>>,
+        builder_config: ExternalBlockBuilderConfig<CertificateSignaturePubKey<ST>>,
     ) -> io::Result<
         TokioTaskUpdater<
             TxPoolCommand<
@@ -183,11 +215,6 @@ where
             {
                 let metrics = metrics.clone();
 
-                let mut promote_pending_timer =
-                    tokio::time::interval(Duration::from_millis(PROMOTE_PENDING_INTERVAL_MS));
-                promote_pending_timer
-                    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
                 move |command_rx, event_tx| {
                     let pool = EthTxPool::new(
                         soft_tx_expiry,
@@ -212,7 +239,6 @@ where
 
                         forwarding_manager: Box::pin(EthTxPoolForwardingManager::default()),
                         preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
-                        promote_pending_timer,
 
                         metrics,
                         executor_metrics,
@@ -539,7 +565,6 @@ where
 
             forwarding_manager,
             preload_manager,
-            promote_pending_timer,
 
             metrics,
             executor_metrics,
@@ -616,28 +641,44 @@ where
         if let Some(builder_bundles) = ipc.as_mut().poll_builder_bundles() {
             let _span = debug_span!("ipc builder bundles", len = builder_bundles.len()).entered();
             
-            for bundle in builder_bundles {
+            debug!("Received {} builder bundle(s) from IPC", builder_bundles.len());
+            
+            for (idx, bundle) in builder_bundles.into_iter().enumerate() {
+                debug!("Processing builder bundle {}", idx);
+                debug!("  Signer: {}", bundle.signer);
+                debug!("  Timestamp: {}", bundle.timestamp);
+                debug!("  Num transactions: {}", bundle.transactions.len());
+                
                 match convert_builder_bundle::<ST>(bundle) {
                     Ok(signed_bundle) => {
+                        debug!("Successfully converted builder bundle {}", idx);
+                        debug!("  Converted {} transactions", signed_bundle.transactions.len());
+                        
                         let current_time = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
                             .as_secs();
                         
-                        match pool.submit_signed_builder_bundle(signed_bundle, current_time) {
+                        debug!("  Current time: {}, bundle timestamp: {}", current_time, signed_bundle.timestamp);
+                        
+                        match pool.submit_signed_builder_bundle(
+                            signed_bundle,
+                            current_time,
+                        ) {
                             Ok(added_count) => {
                                 debug!(
                                     added_transactions = added_count,
-                                    "Successfully added builder bundle to pool"
+                                    "Successfully added builder bundle {} to pool",
+                                    idx
                                 );
                             }
                             Err(e) => {
-                                warn!(?e, "Failed to add builder bundle to pool");
+                                warn!(?e, "Failed to add builder bundle {} to pool", idx);
                             }
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to convert builder bundle");
+                        warn!(error = %e, "Failed to convert builder bundle {}", idx);
                     }
                 }
             }
@@ -696,16 +737,6 @@ where
             preload_manager.add_requests(inserted_addresses.iter());
 
             forwarding_manager.as_mut().complete_ingress();
-        }
-
-        while promote_pending_timer.poll_tick(cx).is_ready() {
-            pool.promote_pending(
-                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
-                block_policy,
-                state_backend,
-            );
-
-            promote_pending_timer.reset();
         }
 
         while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
